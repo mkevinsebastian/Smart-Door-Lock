@@ -6,6 +6,7 @@ import ProtectedRoute from "./components/ProtectedRoute";
 import { logout, getToken } from "./services/api";
 import Login from "./pages/login";
 import Dashboard from "./pages/Dashboard";
+import DoorlockUsers from "./pages/DoorlockUsers";
 
 export default function App() {
   const navigate = useNavigate();
@@ -41,6 +42,9 @@ export default function App() {
                 <li className="nav-item">
                   <Link className="nav-link" to="/alarms">Alarms</Link>
                 </li>
+                <li className="nav-item">
+                  <Link className="nav-link" to="/doorlock-users">Doorlock Users</Link>
+                </li>
               </ul>
               <button onClick={doLogout} className="btn btn-outline-light">
                 Logout
@@ -62,6 +66,8 @@ export default function App() {
         <Route path="/users" element={<ProtectedRoute><Users /></ProtectedRoute>} />
         <Route path="/attendance" element={<ProtectedRoute><Attendance /></ProtectedRoute>} />
         <Route path="/alarms" element={<ProtectedRoute><Alarms /></ProtectedRoute>} />
+
+        <Route path="/doorlock-users" element={<ProtectedRoute><DoorlockUsers /></ProtectedRoute>}/>
 
         {/* Catch-all */}
         <Route path="*" element={<h2 className="p-4">Page not found</h2>} />

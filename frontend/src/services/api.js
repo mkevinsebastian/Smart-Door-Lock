@@ -24,6 +24,17 @@ export async function apiPost(path, body, auth = true) {
   return res.json();
 }
 
+export async function apiDelete(path, auth = true) {
+  const headers = {};
+  if (auth) headers.Authorization = `Bearer ${getToken()}`;
+  const res = await fetch(`${API_BASE}${path}`, {
+    method: "DELETE",
+    headers,
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+
 export async function login(username, password) {
   const res = await apiPost("/login", { username, password }, false);
   localStorage.setItem("token", res.token);

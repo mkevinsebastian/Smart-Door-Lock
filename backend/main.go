@@ -39,15 +39,25 @@ type Alarm struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+type DoorlockUser struct {
+	ID        uint      `json:"id" gorm:"primaryKey"`
+	Name      string    `json:"name"`
+	AccessID  string    `json:"access_id" gorm:"uniqueIndex"`
+	DoorID    string    `json:"door_id"`
+	IsActive  bool      `json:"is_active"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+
 // ====== DB ======
 func initDB() *gorm.DB {
 	db, err := gorm.Open(sqlite.Open("data.db"), &gorm.Config{})
 	if err != nil {
 		log.Fatal(err)
 	}
-	if err := db.AutoMigrate(&User{}, &Attendance{}, &Alarm{}); err != nil {
-		log.Fatal(err)
-	}
+	if err := db.AutoMigrate(&User{}, &Attendance{}, &Alarm{}, &DoorlockUser{}); err != nil {
+	log.Fatal(err)
+}
 
 	// seed admin jika kosong
 	var count int64
@@ -152,6 +162,55 @@ func main() {
 	// ====== PROTECTED ROUTES ======
 	api.Use(authMiddleware())
 
+	// ====== DOORLOCK USERS CRUD ======
+	doorlock := api.Group("/doorlock")
+
+	// Get all doorlock users
+	doorlock.GET("/users", func(c *gin.Context) {
+		var list []DoorlockUser
+		db.Find(&list)
+		c.JSON(http.StatusOK, list)
+	})
+
+	// Create doorlock user
+	doorlock.POST("/users", func(c *gin.Context) {
+		var req struct {
+			Name     string `json:"name"`
+			AccessID string `json:"access_id"`
+			DoorID   string `json:"door_id"`
+		}
+		if err := c.BindJSON(&req); err != nil || req.Name == "" || req.AccessID == "" || req.DoorID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
+			return
+		}
+
+		u := DoorlockUser{
+			Name:      req.Name,
+			AccessID:  req.AccessID,
+			DoorID:    req.DoorID,
+			IsActive:  true,
+			CreatedAt: time.Now(),
+		}
+
+		if err := db.Create(&u).Error; err != nil {
+			c.JSON(http.StatusConflict, gin.H{"status": false, "error_code": 2})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
+	})
+
+	// Delete doorlock user
+	doorlock.DELETE("/users/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		res := db.Delete(&DoorlockUser{}, id)
+		if res.RowsAffected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"status": false, "error_code": 3})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
+	})
+
+
 	// Get All Users
 	api.GET("/users", func(c *gin.Context) {
 		var users []User
@@ -213,6 +272,25 @@ func main() {
 		db.Create(&rec)
 		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
 	})
+
+	// Attendance summary per day (last 7 days)
+	api.GET("/attendance/summary", func(c *gin.Context) {
+		var results []struct {
+			Date  string
+			Count int
+		}
+		// Query attendance grouped by date
+		db.Raw(`
+			SELECT strftime('%Y-%m-%d', created_at) AS date, COUNT(*) AS count
+			FROM attendances
+			WHERE created_at >= date('now', '-7 days')
+			GROUP BY strftime('%Y-%m-%d', created_at)
+			ORDER BY date ASC
+		`).Scan(&results)
+
+		c.JSON(http.StatusOK, results)
+	})
+
 
 	api.GET("/attendance", func(c *gin.Context) {
 		var list []Attendance
