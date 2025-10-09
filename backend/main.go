@@ -2,6 +2,7 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"time"
@@ -124,6 +125,13 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
+// Helper function to convert string to uint
+func stringToUint(s string) uint {
+	var i uint
+	fmt.Sscanf(s, "%d", &i)
+	return i
+}
+
 func main() {
 	db := initDB()
 	r := gin.Default()
@@ -158,7 +166,127 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"token": token, "username": u.Username, "role": u.Role})
 	})
 
+	// Protected routes
 	api.Use(authMiddleware())
+
+	// ====== USER MANAGEMENT ======
+	userGroup := api.Group("/users")
+	
+	// Get all users
+	userGroup.GET("/", func(c *gin.Context) {
+		var users []User
+		if err := db.Find(&users).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch users"})
+			return
+		}
+		
+		// Remove passwords from response for security
+		for i := range users {
+			users[i].Password = ""
+		}
+		c.JSON(http.StatusOK, gin.H{"users": users})
+	})
+
+	// Create new user
+	userGroup.POST("/", func(c *gin.Context) {
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+			Role     string `json:"role"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		if req.Username == "" || req.Password == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password are required"})
+			return
+		}
+		
+		user := User{
+			Username:  req.Username,
+			Password:  req.Password, // In production, hash this!
+			Role:      req.Role,
+			IsActive:  true,
+			CreatedAt: time.Now(),
+		}
+		
+		if err := db.Create(&user).Error; err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "username already exists"})
+			return
+		}
+		
+		// Don't return password
+		user.Password = ""
+		c.JSON(http.StatusCreated, user)
+	})
+
+	// Update user
+	userGroup.PUT("/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password,omitempty"`
+			Role     string `json:"role"`
+			IsActive bool   `json:"is_active"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		var user User
+		if err := db.First(&user, id).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		
+		// Update fields
+		user.Username = req.Username
+		user.Role = req.Role
+		user.IsActive = req.IsActive
+		
+		// Only update password if provided
+		if req.Password != "" {
+			user.Password = req.Password // In production, hash this!
+		}
+		
+		if err := db.Save(&user).Error; err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "username already exists"})
+			return
+		}
+		
+		// Don't return password
+		user.Password = ""
+		c.JSON(http.StatusOK, user)
+	})
+
+	// Delete user
+	userGroup.DELETE("/:id", func(c *gin.Context) {
+		id := c.Param("id")
+		
+		// Prevent deleting yourself
+		currentUsername, _ := c.Get("username")
+		var currentUser User
+		db.Where("username = ?", currentUsername).First(&currentUser)
+		
+		if currentUser.ID == stringToUint(id) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot delete your own account"})
+			return
+		}
+		
+		result := db.Delete(&User{}, id)
+		if result.RowsAffected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+		
+		c.JSON(http.StatusOK, gin.H{"message": "user deleted successfully"})
+	})
 
 	// ====== DOORLOCK USERS ======
 	doorlock := api.Group("/doorlock")
@@ -236,6 +364,26 @@ func main() {
 		c.JSON(http.StatusOK, list)
 	})
 
+	// ====== ATTENDANCE SUMMARY ======
+	api.GET("/attendance/summary", func(c *gin.Context) {
+		var summary []struct {
+			Date  string `json:"date"`
+			Count int    `json:"count"`
+		}
+
+		// Get last 7 days attendance count
+		sevenDaysAgo := time.Now().AddDate(0, 0, -7)
+		
+		db.Model(&Attendance{}).
+			Select("DATE(created_at) as date, COUNT(*) as count").
+			Where("created_at >= ?", sevenDaysAgo).
+			Group("DATE(created_at)").
+			Order("date DESC").
+			Limit(7).
+			Find(&summary)
+
+		c.JSON(http.StatusOK, summary)
+	})
 
 	// ====== ALARM ======
 	api.POST("/alarm", func(c *gin.Context) {
@@ -277,7 +425,7 @@ func main() {
 		c.JSON(http.StatusOK, list)
 	})
 
-	log.Println("Backend listening on :8080")
+	log.Println("🚀 Backend listening on :8080")
 	if err := r.Run(":8080"); err != nil {
 		log.Fatal(err)
 	}
