@@ -6,56 +6,59 @@ export default function DoorlockUsers() {
   const [form, setForm] = useState({ name: "", access_id: "", door_id: "" });
   const [loading, setLoading] = useState(false);
 
-  // Fetch data
   const loadUsers = async () => {
-    const res = await apiGet("/doorlock/users");
-    setUsers(res);
+    try {
+      const res = await apiGet("/doorlock/users");
+      setUsers(res || []);
+    } catch (err) {
+      console.error("Failed to load doorlock users:", err);
+      setUsers([]);
+    }
   };
 
   useEffect(() => {
     loadUsers();
   }, []);
 
-  // Create user
   const handleCreate = async (e) => {
     e.preventDefault();
     if (!form.name || !form.access_id || !form.door_id) {
       alert("Please fill all fields!");
       return;
     }
+
     setLoading(true);
     try {
       await apiPost("/doorlock/users", form);
       setForm({ name: "", access_id: "", door_id: "" });
       await loadUsers();
     } catch (err) {
+      console.error("Failed to create doorlock user:", err);
       alert("Failed to create user!");
-      console.error(err);
     } finally {
       setLoading(false);
     }
   };
 
-  // Delete user
-  const handleDelete = async (id) => {
+  const handleDelete = async (accessId) => {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
     setLoading(true);
     try {
-      await apiDelete(`/doorlock/users/${id}`);
+      await apiDelete(`/doorlock/users/${accessId}`);  // ✅ correct param
       await loadUsers();
     } catch (err) {
-      alert("Failed to delete user!");
-      console.error(err);
+      console.error("Failed to delete doorlock user:", err);
+      alert(`Failed to delete user: ${err.message}`);
     } finally {
       setLoading(false);
     }
   };
+
 
   return (
     <div className="container py-4">
       <h2>🔑 Doorlock Users Management</h2>
 
-      {/* Create form */}
       <form className="row g-3 mt-3" onSubmit={handleCreate}>
         <div className="col-md-3">
           <input
@@ -95,7 +98,6 @@ export default function DoorlockUsers() {
         </div>
       </form>
 
-      {/* Table */}
       <div className="mt-4">
         <table className="table table-striped table-bordered">
           <thead>
@@ -126,7 +128,7 @@ export default function DoorlockUsers() {
                   <td>
                     <button
                       className="btn btn-sm btn-danger"
-                      onClick={() => handleDelete(u.id)}
+                      onClick={() => handleDelete(u.access_id)}
                       disabled={loading}
                     >
                       Delete

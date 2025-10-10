@@ -20,14 +20,11 @@ async function handleResponse(res) {
 
 export async function apiGet(path) {
   const token = getToken();
-  const headers = { 
-    'Content-Type': 'application/json'
+  const headers = {
+    "Content-Type": "application/json",
+    "Authorization": `Bearer ${token || ''}`
   };
-  
-  if (token) {
-    headers.Authorization = `Bearer ${token}`;
-  }
-  
+
   const res = await fetch(`${API_BASE}${path}`, { headers });
   return handleResponse(res);
 }
@@ -114,17 +111,11 @@ export async function createAlarm(alarmData) {
   return apiPost("/alarm", alarmData);
 }
 
-// Users management API
 export async function getSystemUsers() {
-  try {
-    const data = await apiGet("/users");
-    // Handle both response formats: {users: []} or direct array
-    return Array.isArray(data) ? data : (data.users || []);
-  } catch (error) {
-    console.error('Error fetching system users:', error);
-    throw error; // Re-throw to handle in component
-  }
+  const res = await apiGet("/users/");
+  return res.users || [];
 }
+
 
 export async function createSystemUser(userData) {
   return apiPost("/users", userData);

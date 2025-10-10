@@ -8,6 +8,10 @@ import Login from "./pages/login";
 import Dashboard from "./pages/Dashboard";
 import DoorlockUsers from "./pages/DoorlockUsers";
 
+import 'bootstrap/dist/css/bootstrap.min.css';
+import 'bootstrap/dist/js/bootstrap.bundle.min.js'; 
+
+
 export default function App() {
   const navigate = useNavigate();
   const isLoggedIn = !!getToken();
