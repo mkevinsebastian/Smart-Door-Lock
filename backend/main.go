@@ -20,7 +20,7 @@ var jwtSecret = []byte("super-secret-key")
 type User struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	Username  string    `json:"username" gorm:"uniqueIndex"`
-	Password  string    `json:"-"` // plain text untuk testing
+	Password  string    `json:"-"`
 	Role      string    `json:"role"`
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
@@ -51,7 +51,7 @@ type DoorlockUser struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ====== DB ======
+// ====== DB INITIALIZATION & SEEDING ======
 func initDB() *gorm.DB {
 	db, err := gorm.Open(sqlite.Open("data.db"), &gorm.Config{})
 	if err != nil {
@@ -61,23 +61,91 @@ func initDB() *gorm.DB {
 		log.Fatal(err)
 	}
 
-	// seed admin jika kosong
-	var count int64
-	db.Model(&User{}).Count(&count)
-	if count == 0 {
-		db.Create(&User{
-			Username:  "admin",
-			Password:  "admin123",
-			Role:      "admin",
-			IsActive:  true,
-			CreatedAt: time.Now(),
-		})
-		log.Println("✅ Default admin created (username: admin, password: admin123)")
+	// Seeding data jika database kosong
+	var userCount int64
+	db.Model(&User{}).Count(&userCount)
+	if userCount == 0 {
+		log.Println("Database is empty, seeding initial data...")
+		seedUsers(db)
+		seedDoorlockUsers(db)
+		seedAttendanceData(db)
+		log.Println("✅ Initial data seeding complete.")
 	}
+
 	return db
 }
 
-// ====== JWT ======
+// seedUsers creates default admin and other users
+func seedUsers(db *gorm.DB) {
+	users := []User{
+		{Username: "admin", Password: "admin123", Role: "admin", IsActive: true, CreatedAt: time.Now()},
+		{Username: "budi", Password: "password123", Role: "user", IsActive: true, CreatedAt: time.Now()},
+		{Username: "citra", Password: "password123", Role: "user", IsActive: false, CreatedAt: time.Now()},
+	}
+
+	if err := db.Create(&users).Error; err != nil {
+		log.Fatalf("❌ Failed to seed users: %v", err)
+	}
+	log.Println("   -> ✅ Users seeded.")
+}
+
+// seedDoorlockUsers creates dummy doorlock users synchronized with attendance data
+func seedDoorlockUsers(db *gorm.DB) {
+	doorUsers := []DoorlockUser{
+		{Name: "Budi", AccessID: "A001", DoorID: "D01", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Citra", AccessID: "A002", DoorID: "D01", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Dewi", AccessID: "A003", DoorID: "D02", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Eka", AccessID: "A004", DoorID: "D02", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Fajar", AccessID: "A005", DoorID: "D01", IsActive: false, CreatedAt: time.Now()},
+	}
+	if err := db.Create(&doorUsers).Error; err != nil {
+		log.Fatalf("❌ Failed to seed doorlock users: %v", err)
+	}
+	log.Println("   -> ✅ Doorlock Users seeded.")
+}
+
+
+// seedAttendanceData creates dummy attendance records for demonstration
+func seedAttendanceData(db *gorm.DB) {
+	loc, _ := time.LoadLocation("Asia/Jakarta")
+
+	attendances := []Attendance{
+		// ---- Tanggal 5 Oktober ----
+		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 5, 9, 15, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 5, 14, 30, 0, 0, loc)},
+		// ---- Tanggal 6 Oktober ----
+		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 5, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 7, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 10, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 6, 9, 0, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 6, 17, 30, 0, 0, loc)},
+		// ---- Tanggal 7 Oktober ----
+		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 7, 8, 20, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 7, 9, 5, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 7, 18, 0, 0, 0, loc)},
+		// ---- Tanggal 8 Oktober ----
+		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 8, 7, 55, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 1, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 2, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 15, 0, 0, loc)},
+		{Username: "Fajar", AccessID: "A005", Status: "success", CreatedAt: time.Date(2025, 10, 8, 10, 0, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 8, 16, 45, 0, 0, loc)},
+		// ---- Tanggal 9 Oktober ----
+		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 9, 8, 30, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 9, 8, 32, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 9, 9, 0, 0, 0, loc)},
+		{Username: "Fajar", AccessID: "A005", Status: "success", CreatedAt: time.Date(2025, 10, 9, 17, 5, 0, 0, loc)},
+	}
+
+	if err := db.Create(&attendances).Error; err != nil {
+		log.Fatalf("❌ Failed to seed attendance data: %v", err)
+	}
+
+	log.Println("   -> ✅ Attendance data seeded.")
+}
+
+
+// ====== JWT & AUTH MIDDLEWARE ======
 type jwtClaims struct {
 	Username string `json:"username"`
 	jwt.RegisteredClaims
@@ -131,6 +199,7 @@ func stringToUint(s string) uint {
 	fmt.Sscanf(s, "%d", &i)
 	return i
 }
+
 
 func main() {
 	db := initDB()
@@ -373,7 +442,7 @@ func main() {
 
 		// Get last 7 days attendance count
 		sevenDaysAgo := time.Now().AddDate(0, 0, -7)
-		
+
 		db.Model(&Attendance{}).
 			Select("DATE(created_at) as date, COUNT(*) as count").
 			Where("created_at >= ?", sevenDaysAgo).
