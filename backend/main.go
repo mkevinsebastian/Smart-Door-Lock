@@ -10,6 +10,7 @@ import (
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt" // <-- TAMBAHAN
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
@@ -77,10 +78,14 @@ func initDB() *gorm.DB {
 
 // seedUsers creates default admin and other users
 func seedUsers(db *gorm.DB) {
+	// <-- PERUBAHAN: Hash passwords untuk seeding
+	adminPass, _ := hashPassword("admin123")
+	userPass, _ := hashPassword("password123")
+
 	users := []User{
-		{Username: "admin", Password: "admin123", Role: "admin", IsActive: true, CreatedAt: time.Now()},
-		{Username: "budi", Password: "password123", Role: "user", IsActive: true, CreatedAt: time.Now()},
-		{Username: "citra", Password: "password123", Role: "user", IsActive: false, CreatedAt: time.Now()},
+		{Username: "admin", Password: adminPass, Role: "admin", IsActive: true, CreatedAt: time.Now()},
+		{Username: "budi", Password: userPass, Role: "user", IsActive: true, CreatedAt: time.Now()},
+		{Username: "citra", Password: userPass, Role: "user", IsActive: false, CreatedAt: time.Now()},
 	}
 
 	if err := db.Create(&users).Error; err != nil {
@@ -103,7 +108,6 @@ func seedDoorlockUsers(db *gorm.DB) {
 	}
 	log.Println("   -> ✅ Doorlock Users seeded.")
 }
-
 
 // seedAttendanceData creates dummy attendance records for demonstration
 func seedAttendanceData(db *gorm.DB) {
@@ -143,7 +147,6 @@ func seedAttendanceData(db *gorm.DB) {
 
 	log.Println("   -> ✅ Attendance data seeded.")
 }
-
 
 // ====== JWT & AUTH MIDDLEWARE ======
 type jwtClaims struct {
@@ -193,13 +196,23 @@ func authMiddleware() gin.HandlerFunc {
 	}
 }
 
+// ====== BCRYPT HELPER FUNCTIONS ====== // <-- TAMBAHAN
+func hashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+	return string(bytes), err
+}
+
+func checkPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
 // Helper function to convert string to uint
 func stringToUint(s string) uint {
 	var i uint
 	fmt.Sscanf(s, "%d", &i)
 	return i
 }
-
 
 func main() {
 	db := initDB()
@@ -224,13 +237,17 @@ func main() {
 		}
 		var u User
 		if err := db.Where("username = ?", req.Username).First(&u).Error; err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "user not found"})
+			// <-- PERUBAHAN: Pesan error yang lebih umum untuk keamanan
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
-		if u.Password != req.Password {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "wrong password"})
+
+		// <-- PERUBAHAN: Gunakan checkPasswordHash
+		if !checkPasswordHash(req.Password, u.Password) {
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
+
 		token, _ := makeToken(u.Username)
 		c.JSON(http.StatusOK, gin.H{"token": token, "username": u.Username, "role": u.Role})
 	})
@@ -240,7 +257,7 @@ func main() {
 
 	// ====== USER MANAGEMENT ======
 	userGroup := api.Group("/users")
-	
+
 	// Get all users
 	userGroup.GET("/", func(c *gin.Context) {
 		var users []User
@@ -248,7 +265,7 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch users"})
 			return
 		}
-		
+
 		// Remove passwords from response for security
 		for i := range users {
 			users[i].Password = ""
@@ -263,30 +280,37 @@ func main() {
 			Password string `json:"password"`
 			Role     string `json:"role"`
 		}
-		
+
 		if err := c.BindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 			return
 		}
-		
+
 		if req.Username == "" || req.Password == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "username and password are required"})
 			return
 		}
-		
+
+		// <-- PERUBAHAN: Hash password sebelum disimpan
+		hashedPassword, err := hashPassword(req.Password)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+			return
+		}
+
 		user := User{
 			Username:  req.Username,
-			Password:  req.Password, // In production, hash this!
+			Password:  hashedPassword, // <-- PERUBAHAN
 			Role:      req.Role,
 			IsActive:  true,
 			CreatedAt: time.Now(),
 		}
-		
+
 		if err := db.Create(&user).Error; err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "username already exists"})
 			return
 		}
-		
+
 		// Don't return password
 		user.Password = ""
 		c.JSON(http.StatusCreated, user)
@@ -295,40 +319,45 @@ func main() {
 	// Update user
 	userGroup.PUT("/:id", func(c *gin.Context) {
 		id := c.Param("id")
-		
+
 		var req struct {
 			Username string `json:"username"`
 			Password string `json:"password,omitempty"`
 			Role     string `json:"role"`
 			IsActive bool   `json:"is_active"`
 		}
-		
+
 		if err := c.BindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
 			return
 		}
-		
+
 		var user User
 		if err := db.First(&user, id).Error; err != nil {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
-		
+
 		// Update fields
 		user.Username = req.Username
 		user.Role = req.Role
 		user.IsActive = req.IsActive
-		
-		// Only update password if provided
+
+		// <-- PERUBAHAN: Hanya update password jika diberikan, dan HASH password baru
 		if req.Password != "" {
-			user.Password = req.Password // In production, hash this!
+			hashedPassword, err := hashPassword(req.Password)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
+				return
+			}
+			user.Password = hashedPassword
 		}
-		
+
 		if err := db.Save(&user).Error; err != nil {
 			c.JSON(http.StatusConflict, gin.H{"error": "username already exists"})
 			return
 		}
-		
+
 		// Don't return password
 		user.Password = ""
 		c.JSON(http.StatusOK, user)
@@ -337,23 +366,23 @@ func main() {
 	// Delete user
 	userGroup.DELETE("/:id", func(c *gin.Context) {
 		id := c.Param("id")
-		
+
 		// Prevent deleting yourself
 		currentUsername, _ := c.Get("username")
 		var currentUser User
 		db.Where("username = ?", currentUsername).First(&currentUser)
-		
+
 		if currentUser.ID == stringToUint(id) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot delete your own account"})
 			return
 		}
-		
+
 		result := db.Delete(&User{}, id)
 		if result.RowsAffected == 0 {
 			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
 			return
 		}
-		
+
 		c.JSON(http.StatusOK, gin.H{"message": "user deleted successfully"})
 	})
 
