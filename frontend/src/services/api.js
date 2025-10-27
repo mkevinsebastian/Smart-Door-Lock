@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:8080/api";
+const API_BASE = "http://localhost:8090/api"; // Pastikan port sesuai backend
 
 export function getToken() {
   return localStorage.getItem("token");
@@ -10,12 +10,11 @@ async function handleResponse(res) {
     throw new Error(errorText || `HTTP ${res.status}`);
   }
   
-  // Handle empty responses
   const contentType = res.headers.get('content-type');
   if (contentType && contentType.includes('application/json')) {
     return res.json();
   }
-  return {}; // Return empty object for non-JSON responses
+  return {};
 }
 
 export async function apiGet(path) {
@@ -116,13 +115,12 @@ export async function getSystemUsers() {
   return res.users || [];
 }
 
-
 export async function createSystemUser(userData) {
   return apiPost("/users", userData);
 }
 
 export async function updateSystemUser(id, userData) {
-  return apiPost(`/users/${id}`, userData); // Use apiPost for consistency
+  return apiPost(`/users/${id}`, userData);
 }
 
 export async function deleteSystemUser(id) {
@@ -146,6 +144,76 @@ export async function getDoorlockUsersCount() {
     return Array.isArray(data) ? data.length : 0;
   } catch (error) {
     console.error('Error fetching doorlock users:', error);
+    throw error;
+  }
+}
+
+// ====== NEW TREND ANALYSIS APIs ======
+export async function getFrequentAccess(hours = 24) {
+  try {
+    const data = await apiGet(`/trends/frequent-access?hours=${hours}`);
+    return data;
+  } catch (error) {
+    console.error('Error fetching frequent access:', error);
+    throw error;
+  }
+}
+
+export async function getLongOpenDoors(durationThreshold = 60) {
+  try {
+    const data = await apiGet(`/trends/long-open-doors?duration=${durationThreshold}`);
+    return data;
+  } catch (error) {
+    console.error('Error fetching long open doors:', error);
+    throw error;
+  }
+}
+
+export async function logDoorOpen(doorData) {
+  try {
+    const data = await apiPost("/trends/door-open-log", doorData);
+    return data;
+  } catch (error) {
+    console.error('Error logging door open:', error);
+    throw error;
+  }
+}
+
+// ====== NEW MQTT CONTROL APIs ======
+export async function controlDoorLock(doorId, command) {
+  try {
+    const data = await apiPost("/control/doorlock", {
+      door_id: doorId,
+      command: command
+    });
+    return data;
+  } catch (error) {
+    console.error('Error controlling door lock:', error);
+    throw error;
+  }
+}
+
+export async function controlBuzzer(buzzerId, command, duration = 5) {
+  try {
+    const data = await apiPost("/control/buzzer", {
+      buzzer_id: buzzerId,
+      command: command,
+      duration: duration
+    });
+    return data;
+  } catch (error) {
+    console.error('Error controlling buzzer:', error);
+    throw error;
+  }
+}
+
+// ====== NEW DASHBOARD STATS API ======
+export async function getDashboardStats() {
+  try {
+    const data = await apiGet("/dashboard/stats");
+    return data;
+  } catch (error) {
+    console.error('Error fetching dashboard stats:', error);
     throw error;
   }
 }

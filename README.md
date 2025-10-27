@@ -4,6 +4,17 @@ Project ini merupakan implementasi sistem **Smart Door Lock** berbasis:
 - Backend: Golang (Gin + SQLite)
 - Frontend: React + Vite
 
+## Architecture
+Frontend (React) 
+    ↓ HTTP/REST
+Backend (Golang) → SQLite Database
+    ↓ MQTT
+MQTT Broker (Mosquitto)
+    ↓
+IoT Devices (Door Lock, Buzzer, Sensors)
+    ↑
+Telegram Bot ← Notifications
+
 ## 🚀 Fitur Utama
 1. **Login & JWT Authentication**
    - Admin dan user dengan proteksi token.
@@ -20,22 +31,29 @@ Project ini merupakan implementasi sistem **Smart Door Lock** berbasis:
 
 ## 📂 Struktur Project
 Smart-Door-Lock/
-│
-├── backend/ # Golang backend (API + SQLite DB)
-│ ├── main.go
-│ ├── go.mod
-│ └── data.db (ignored di .gitignore)
-│
-├── frontend/ # React frontend (Vite)
-│ ├── src/
-│ │ ├── pages/
-│ │ ├── components/
-│ │ └── services/
-│ ├── index.html
-│ ├── vite.config.js
-│ └── package.json
-│
-└── README.md
+├── docker-compose.yml          # Docker compose setup
+├── .env.example               # Environment variables template
+├── backend/                   # Golang backend
+│   ├── main.go
+│   ├── go.mod
+│   ├── go.sum
+│   ├── Dockerfile
+│   └── data.db (auto-generated)
+├── frontend/                  # React frontend
+│   ├── src/
+│   │   ├── pages/
+│   │   ├── components/
+│   │   └── services/
+│   ├── package.json
+│   ├── vite.config.js
+│   └── Dockerfile
+├── mosquitto/                 # MQTT broker config
+│   └── config/
+│       └── mosquitto.conf
+└── scripts/                   # Management scripts
+    ├── start.sh
+    ├── stop.sh
+    └── logs.sh
 
 ## 🛠️ Cara Menjalankan
 
@@ -43,7 +61,7 @@ Smart-Door-Lock/
 cd backend
 go run main.go
 
-- Backend berjalan di: `http://localhost:8080`
+- Backend berjalan di: `http://localhost8090`
 
 ### Frontend
 cd frontend
@@ -51,6 +69,16 @@ bun install
 bun dev
 
 - Frontend berjalan di: `http://localhost:5173`
+
+## Docker
+# Build and start all services
+docker compose up -d --build
+
+# Check status
+docker compose ps
+
+# View logs
+docker compose logs -f
 
 ## 📌 Catatan
 - File database `backend/data.db` sudah di-`.gitignore`.
