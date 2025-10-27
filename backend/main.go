@@ -12,10 +12,10 @@ import (
 	"net/http"
 	"time"
 
+	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
-	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/golang-jwt/jwt/v5"
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
@@ -437,8 +437,7 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"users": users})
 	})
-	
-	// ... (userGroup POST, PUT, DELETE handlers tetap sama) ...
+
 	userGroup.POST("/", func(c *gin.Context) {
 		var req struct {
 			Username string `json:"username"`
@@ -478,16 +477,114 @@ func main() {
 		c.JSON(http.StatusCreated, user)
 	})
 
+	userGroup.PUT("/:id", func(c *gin.Context) {
+		id := c.Param("id")
+
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password,omitempty"`
+			Role     string `json:"role"`
+			IsActive bool   `json:"is_active"`
+		}
+
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+
+		var user User
+		if err := db.First(&user, id).Error; err != nil {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+
+		user.Username = req.Username
+		user.Role = req.Role
+		user.IsActive = req.IsActive
+
+		if req.Password != "" {
+			encryptedPassword, err := EncryptAES(req.Password)
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt new password"})
+				return
+			}
+			user.Password = encryptedPassword
+		}
+
+		if err := db.Save(&user).Error; err != nil {
+			c.JSON(http.StatusConflict, gin.H{"error": "username already exists"})
+			return
+		}
+
+		c.JSON(http.StatusOK, user)
+	})
+
+	userGroup.DELETE("/:id", func(c *gin.Context) {
+		id := c.Param("id")
+
+		currentUsername, _ := c.Get("username")
+		var currentUser User
+		db.Where("username = ?", currentUsername).First(&currentUser)
+
+		if currentUser.ID == stringToUint(id) {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "cannot delete your own account"})
+			return
+		}
+
+		result := db.Delete(&User{}, id)
+		if result.RowsAffected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"error": "user not found"})
+			return
+		}
+
+		c.JSON(http.StatusOK, gin.H{"message": "user deleted successfully"})
+	})
+
 	// ====== DOORLOCK USERS ======
 	doorlock := api.Group("/doorlock")
 	doorlock.GET("/users", func(c *gin.Context) {
 		var list []DoorlockUser
-		db.Find(&list)
+		if err := db.Find(&list).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch doorlock users"})
+			return
+		}
 		c.JSON(http.StatusOK, list)
 	})
-	
-	// ... (doorlock POST, DELETE handlers tetap sama) ...
 
+	doorlock.POST("/users", func(c *gin.Context) {
+		var req struct {
+			Name     string `json:"name"`
+			AccessID string `json:"access_id"`
+			DoorID   string `json:"door_id"`
+		}
+		if err := c.BindJSON(&req); err != nil || req.Name == "" || req.AccessID == "" || req.DoorID == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
+			return
+		}
+
+		u := DoorlockUser{
+			Name:      req.Name,
+			AccessID:  req.AccessID,
+			DoorID:    req.DoorID,
+			IsActive:  true,
+			CreatedAt: time.Now(),
+		}
+		if err := db.Create(&u).Error; err != nil {
+			c.JSON(http.StatusConflict, gin.H{"status": false, "error_code": 2})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
+	})
+
+	doorlock.DELETE("/users/:access_id", func(c *gin.Context) {
+		accessID := c.Param("access_id")
+		res := db.Where("access_id = ?", accessID).Delete(&DoorlockUser{})
+		if res.RowsAffected == 0 {
+			c.JSON(http.StatusNotFound, gin.H{"status": false, "error_code": 3, "message": "user not found"})
+			return
+		}
+		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0, "message": "deleted successfully"})
+	})
 	// ====== ATTENDANCE ======
 	api.POST("/attendance", func(c *gin.Context) {
 		var req struct{ AccessID string `json:"access_id"` }
@@ -512,7 +609,39 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
 	})
 	
-	// ... (attendance GET handlers tetap sama) ...
+	api.GET("/attendance", func(c *gin.Context) {
+    var list []Attendance
+    
+		// Query dengan order by created_at descending
+		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
+			log.Printf("Error fetching attendance: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch attendance data"})
+			return
+		}
+		
+		log.Printf("Fetched %d attendance records", len(list))
+		c.JSON(http.StatusOK, list)
+	})
+
+	// ✅ Juga tambahkan handler untuk summary
+	api.GET("/attendance/summary", func(c *gin.Context) {
+		var summary []struct {
+			Date  string `json:"date"`
+			Count int    `json:"count"`
+		}
+
+		sevenDaysAgo := time.Now().AddDate(0, 0, -7)
+
+		db.Model(&Attendance{}).
+			Select("DATE(created_at) as date, COUNT(*) as count").
+			Where("created_at >= ?", sevenDaysAgo).
+			Group("DATE(created_at)").
+			Order("date DESC").
+			Limit(7).
+			Find(&summary)
+
+		c.JSON(http.StatusOK, summary)
+	})
 
 	// ====== ALARM ======
 	api.POST("/alarm", func(c *gin.Context) {
@@ -569,6 +698,7 @@ func main() {
 			}
 		}()
 	})
+
 	api.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
@@ -576,7 +706,6 @@ func main() {
 			"service":   "doorlock-backend",
 		})
 	})
-
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Doorlock Backend API",
@@ -585,11 +714,13 @@ func main() {
 	})
 
 	api.GET("/alarms", func(c *gin.Context) {
-		var list []Alarm
-		db.Order("created_at desc").Find(&list)
+	var list []Alarm
+		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch alarms"})
+			return
+		}
 		c.JSON(http.StatusOK, list)
 	})
-
 	// ====== TREND ANALYSIS ENDPOINTS ======
 	api.GET("/trends/frequent-access", func(c *gin.Context) {
 		hours := 24 // Default: analisis 24 jam terakhir
