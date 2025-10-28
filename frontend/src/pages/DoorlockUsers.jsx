@@ -1,14 +1,19 @@
 import { useEffect, useState } from "react";
-import { apiGet, apiPost, apiDelete } from "../services/api";
+import { getDoorlockUsers, createDoorlockUser, deleteDoorlockUser } from "../services/api";
+import { useMQTT } from '../hooks/useMQTT';
+
+const TOPIC_PUB_SYNC = 'doorlock/sync/users';
 
 export default function DoorlockUsers() {
   const [users, setUsers] = useState([]);
-  const [form, setForm] = useState({ name: "", access_id: "", door_id: "" });
+  const [form, setForm] = useState({ name: "", access_id: "", door_id: "", pin: "" });
   const [loading, setLoading] = useState(false);
+
+  const { client } = useMQTT();
 
   const loadUsers = async () => {
     try {
-      const res = await apiGet("/doorlock/users");
+      const res = await getDoorlockUsers();
       setUsers(res || []);
     } catch (err) {
       console.error("Failed to load doorlock users:", err);
@@ -22,19 +27,30 @@ export default function DoorlockUsers() {
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!form.name || !form.access_id || !form.door_id) {
-      alert("Please fill all fields!");
+    if (!form.name || !form.access_id || !form.door_id || !form.pin) {
+      alert("Please fill all fields (Name, Access ID, Door ID, and PIN)!");
       return;
     }
 
     setLoading(true);
     try {
-      await apiPost("/doorlock/users", form);
-      setForm({ name: "", access_id: "", door_id: "" });
+      await createDoorlockUser(form); 
+      setForm({ name: "", access_id: "", door_id: "", pin: "" });
+      
+      if (client) {
+        const payload = JSON.stringify({ 
+          action: 'add', 
+          access_id: form.access_id,
+          timestamp: new Date().toISOString()
+        });
+        client.publish(TOPIC_PUB_SYNC, payload);
+        console.log(`MQTT Publish: ${TOPIC_PUB_SYNC} -> ${payload}`);
+      }
+      
       await loadUsers();
     } catch (err) {
       console.error("Failed to create doorlock user:", err);
-      alert("Failed to create user!");
+      alert(`Failed to create user! ${err.message}`);
     } finally {
       setLoading(false);
     }
@@ -44,7 +60,18 @@ export default function DoorlockUsers() {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
     setLoading(true);
     try {
-      await apiDelete(`/doorlock/users/${accessId}`);  // ✅ correct param
+      await deleteDoorlockUser(accessId);
+      
+      if (client) {
+        const payload = JSON.stringify({ 
+          action: 'delete', 
+          access_id: accessId,
+          timestamp: new Date().toISOString()
+        });
+        client.publish(TOPIC_PUB_SYNC, payload);
+        console.log(`MQTT Publish: ${TOPIC_PUB_SYNC} -> ${payload}`);
+      }
+      
       await loadUsers();
     } catch (err) {
       console.error("Failed to delete doorlock user:", err);
@@ -78,7 +105,7 @@ export default function DoorlockUsers() {
             onChange={(e) => setForm({ ...form, access_id: e.target.value })}
           />
         </div>
-        <div className="col-md-3">
+        <div className="col-md-2">
           <input
             type="text"
             className="form-control"
@@ -87,7 +114,16 @@ export default function DoorlockUsers() {
             onChange={(e) => setForm({ ...form, door_id: e.target.value })}
           />
         </div>
-        <div className="col-md-3">
+        <div className="col-md-2">
+          <input
+            type="password"
+            className="form-control"
+            placeholder="PIN"
+            value={form.pin}
+            onChange={(e) => setForm({ ...form, pin: e.target.value })}
+          />
+        </div>
+        <div className="col-md-2">
           <button
             type="submit"
             className="btn btn-success w-100"

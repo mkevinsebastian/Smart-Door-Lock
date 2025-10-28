@@ -9,7 +9,7 @@ import {
   getLongOpenDoors,
   getDashboardStats,
   controlDoorLock,
-  controlBuzzer
+  controlBuzzer 
 } from "../services/api";
 import {
   LineChart,
@@ -25,23 +25,24 @@ import {
   Pie,
   Cell
 } from "recharts";
+import { useMQTT } from '../hooks/useMQTT';
+
+const TOPIC_SUB_DASHBOARD_REFRESH = 'doorlock/update/dashboard';
 
 export default function Dashboard() {
   const [users, setUsers] = useState([]);
   const [doorlockUsers, setDoorlockUsers] = useState(0);
-  const [attendance, setAttendance] = useState([]);
+  const [, setAttendance] = useState([]);
   const [alarms, setAlarms] = useState([]);
   const [summary, setSummary] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   
-  // New state for trend analysis
   const [frequentAccess, setFrequentAccess] = useState([]);
   const [longOpenDoors, setLongOpenDoors] = useState([]);
   const [dashboardStats, setDashboardStats] = useState({});
   const [activeTab, setActiveTab] = useState('overview');
 
-  // State for device control
   const [doorControl, setDoorControl] = useState({ doorId: 'D01', command: 'lock' });
   const [buzzerControl, setBuzzerControl] = useState({ 
     buzzerId: 'B01', 
@@ -50,13 +51,11 @@ export default function Dashboard() {
   });
   const [controlLoading, setControlLoading] = useState(false);
 
-  useEffect(() => {
-    loadDashboardData();
-  }, []);
+  const { client, connectionStatus } = useMQTT();
 
   const loadDashboardData = async () => {
     try {
-      setLoading(true);
+      // setLoading(true); // Don't set loading on auto-refresh
       setError('');
 
       const results = await Promise.allSettled([
@@ -109,6 +108,32 @@ export default function Dashboard() {
       setLoading(false);
     }
   };
+  
+  useEffect(() => {
+    loadDashboardData();
+  }, []);
+  
+  useEffect(() => {
+    if (!client || connectionStatus !== 'Connected') return;
+
+    const handleRefresh = (topic) => {
+      console.log(`MQTT: Dashboard refresh triggered by ${topic}`);
+      loadDashboardData();
+    };
+
+    client.subscribe(TOPIC_SUB_DASHBOARD_REFRESH, (err) => {
+      if (err) console.error('Failed to subscribe to dashboard refresh topic', err);
+    });
+
+    client.on('message', handleRefresh);
+
+    return () => {
+      if (client) {
+        client.unsubscribe(TOPIC_SUB_DASHBOARD_REFRESH);
+        client.off('message', handleRefresh);
+      }
+    };
+  }, [client, connectionStatus]);
 
   const handleDoorControl = async () => {
     try {
@@ -138,13 +163,11 @@ export default function Dashboard() {
     }
   };
 
-  // Data untuk chart frequent access
   const frequentAccessChartData = frequentAccess.map(item => ({
     name: item.username || item.access_id,
     count: item.access_count
   }));
 
-  // Data untuk chart long open doors
   const longOpenDoorsChartData = longOpenDoors.map(item => ({
     name: item.username || item.access_id,
     duration: Math.round(item.avg_duration)
@@ -167,16 +190,11 @@ export default function Dashboard() {
 
   return (
     <div className="container py-4">
-      {/* Header Section */}
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4">
         <h2 className="mb-3 mb-md-0">📊 Dashboard</h2>
-        <button
-          className="btn btn-outline-primary btn-sm"
-          onClick={loadDashboardData}
-          disabled={loading}
-        >
-          🔄 Refresh
-        </button>
+        <div className={`badge ${connectionStatus === 'Connected' ? 'bg-success' : 'bg-danger'}`}>
+          {connectionStatus === 'Connected' ? 'Real-time Connected' : connectionStatus}
+        </div>
       </div>
 
       {error && (
@@ -185,8 +203,13 @@ export default function Dashboard() {
           <button type="button" className="btn-close" onClick={() => setError('')}></button>
         </div>
       )}
+      
+      {activeTab === 'overview' && (
+        <div className="alert alert-info" role="alert">
+          <strong>Catatan:</strong> Grafik "Door Access per Day" masih menjumlahkan semua visitor (masuk dan keluar). Untuk memisahkannya (Kriteria 1b), API backend perlu di-update.
+        </div>
+      )}
 
-      {/* Navigation Tabs */}
       <div className="mb-4">
         <ul className="nav nav-tabs">
           <li className="nav-item">
@@ -210,16 +233,14 @@ export default function Dashboard() {
               className={`nav-link ${activeTab === 'control' ? 'active' : ''}`}
               onClick={() => setActiveTab('control')}
             >
-              🎮 Device Control
+              🎮 Device Control (API)
             </button>
           </li>
         </ul>
       </div>
 
-      {/* Overview Tab */}
       {activeTab === 'overview' && (
         <>
-          {/* Cards Section */}
           <div className="row mt-3 g-3">
             <div className="col-12 col-sm-6 col-md-3">
               <div className="card text-center shadow-sm border-primary h-100">
@@ -262,7 +283,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Chart Section */}
           <div className="mt-4">
             <div className="card shadow-sm">
               <div className="card-header bg-white">
@@ -300,10 +320,8 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* Trend Analysis Tab */}
       {activeTab === 'trends' && (
         <div className="row mt-3 g-4">
-          {/* Frequent Access Analysis */}
           <div className="col-12 col-lg-6">
             <div className="card shadow-sm h-100">
               <div className="card-header bg-white">
@@ -357,7 +375,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Long Open Doors Analysis */}
           <div className="col-12 col-lg-6">
             <div className="card shadow-sm h-100">
               <div className="card-header bg-white">
@@ -429,10 +446,8 @@ export default function Dashboard() {
         </div>
       )}
 
-      {/* Device Control Tab */}
       {activeTab === 'control' && (
         <div className="row mt-3 g-4">
-          {/* Door Lock Control */}
           <div className="col-12 col-md-6">
             <div className="card shadow-sm">
               <div className="card-header bg-white">
@@ -480,7 +495,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Buzzer Control */}
           <div className="col-12 col-md-6">
             <div className="card shadow-sm">
               <div className="card-header bg-white">
@@ -540,7 +554,6 @@ export default function Dashboard() {
             </div>
           </div>
 
-          {/* Quick Actions */}
           <div className="col-12">
             <div className="card shadow-sm">
               <div className="card-header bg-white">

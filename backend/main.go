@@ -5,6 +5,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/json" // PERUBAHAN: Dibutuhkan untuk enkripsi/dekripsi body
 	"errors"
 	"fmt"
 	"io"
@@ -17,12 +18,13 @@ import (
 	"github.com/gin-gonic/gin"
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"github.com/golang-jwt/jwt/v5"
+	"golang.org/x/crypto/bcrypt" // PERUBAHAN: Menggunakan bcrypt untuk password
 	"gorm.io/driver/sqlite"
 	"gorm.io/gorm"
 )
 
 var jwtSecret = []byte("super-secret-key")
-var aesKey = []byte("kuncirahasia1234")
+var aesKey = []byte("kuncirahasia1234") // Kunci ini untuk enkripsi payload API (Kriteria 4)
 
 // --- TELEGRAM ---
 var (
@@ -42,7 +44,7 @@ var (
 type User struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	Username  string    `json:"username" gorm:"uniqueIndex"`
-	Password  string    `json:"-"`
+	Password  string    `json:"-"` // Tetap json:"-" agar tidak pernah terkirim
 	Role      string    `json:"role"`
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
@@ -53,6 +55,7 @@ type Attendance struct {
 	Username  string    `json:"username"`
 	AccessID  string    `json:"access_id"`
 	Status    string    `json:"status"`
+	Arrow     string    `json:"arrow"` // PERUBAHAN (Kriteria 7): in/out
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -69,17 +72,18 @@ type DoorlockUser struct {
 	Name      string    `json:"name"`
 	AccessID  string    `json:"access_id" gorm:"uniqueIndex"`
 	DoorID    string    `json:"door_id"`
+	Pin       string    `json:"-"` // PERUBAHAN (Kriteria 5 & 6): Disimpan tapi tidak dikirim
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// ====== TREND ANALYSIS MODELS ======
+// ... (Model Trend Analysis tetap sama) ...
 type DoorOpenLog struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	DoorID    string    `json:"door_id"`
 	AccessID  string    `json:"access_id"`
 	Username  string    `json:"username"`
-	Duration  int       `json:"duration"` // Durasi dalam detik
+	Duration  int       `json:"duration"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -88,10 +92,11 @@ type AccessFrequency struct {
 	AccessID     string    `json:"access_id"`
 	Username     string    `json:"username"`
 	AccessCount  int       `json:"access_count"`
-	TimeFrame    string    `json:"time_frame"` // hourly, daily, weekly
+	TimeFrame    string    `json:"time_frame"`
 	PeriodStart  time.Time `json:"period_start"`
 	PeriodEnd    time.Time `json:"period_end"`
 }
+
 
 // ====== DB INITIALIZATION & SEEDING ======
 func initDB() *gorm.DB {
@@ -100,7 +105,6 @@ func initDB() *gorm.DB {
 		log.Fatal(err)
 	}
 	
-	// Tambahkan migrasi untuk model baru
 	if err := db.AutoMigrate(&User{}, &Attendance{}, &Alarm{}, &DoorlockUser{}, 
 		&DoorOpenLog{}, &AccessFrequency{}); err != nil {
 		log.Fatal(err)
@@ -119,13 +123,25 @@ func initDB() *gorm.DB {
 	return db
 }
 
-// ... (seedUsers, seedDoorlockUsers, seedAttendanceData tetap sama) ...
+// PERUBAHAN (Kriteria 3): Menggunakan bcrypt
+func HashPassword(password string) (string, error) {
+	bytes, err := bcrypt.GenerateFromPassword([]byte(password), 14)
+	return string(bytes), err
+}
+
+// PERUBAHAN (Kriteria 3): Menggunakan bcrypt
+func CheckPasswordHash(password, hash string) bool {
+	err := bcrypt.CompareHashAndPassword([]byte(hash), []byte(password))
+	return err == nil
+}
+
 func seedUsers(db *gorm.DB) {
-	adminPass, err := EncryptAES("admin123")
-	if err != nil { log.Fatalf("Gagal enkripsi seed pass admin: %v", err) }
+	// PERUBAHAN (Kriteria 3): Menggunakan HashPassword (bcrypt)
+	adminPass, err := HashPassword("admin123")
+	if err != nil { log.Fatalf("Gagal hash seed pass admin: %v", err) }
 	
-	userPass, err := EncryptAES("password123")
-	if err != nil { log.Fatalf("Gagal enkripsi seed pass user: %v", err) }
+	userPass, err := HashPassword("password123")
+	if err != nil { log.Fatalf("Gagal hash seed pass user: %v", err) }
 
 	users := []User{
 		{Username: "admin", Password: adminPass, Role: "admin", IsActive: true, CreatedAt: time.Now()},
@@ -140,12 +156,19 @@ func seedUsers(db *gorm.DB) {
 }
 
 func seedDoorlockUsers(db *gorm.DB) {
+	// PERUBAHAN (Kriteria 6): Menambahkan PIN (dihash) ke data seed
+	pin1, _ := HashPassword("1234")
+	pin2, _ := HashPassword("5678")
+	pin3, _ := HashPassword("1111")
+	pin4, _ := HashPassword("2222")
+	pin5, _ := HashPassword("9999")
+
 	doorUsers := []DoorlockUser{
-		{Name: "Budi", AccessID: "A001", DoorID: "D01", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Citra", AccessID: "A002", DoorID: "D01", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Dewi", AccessID: "A003", DoorID: "D02", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Eka", AccessID: "A004", DoorID: "D02", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Fajar", AccessID: "A005", DoorID: "D01", IsActive: false, CreatedAt: time.Now()},
+		{Name: "Budi", AccessID: "A001", DoorID: "D01", Pin: pin1, IsActive: true, CreatedAt: time.Now()},
+		{Name: "Citra", AccessID: "A002", DoorID: "D01", Pin: pin2, IsActive: true, CreatedAt: time.Now()},
+		{Name: "Dewi", AccessID: "A003", DoorID: "D02", Pin: pin3, IsActive: true, CreatedAt: time.Now()},
+		{Name: "Eka", AccessID: "A004", DoorID: "D02", Pin: pin4, IsActive: true, CreatedAt: time.Now()},
+		{Name: "Fajar", AccessID: "A005", DoorID: "D01", Pin: pin5, IsActive: false, CreatedAt: time.Now()},
 	}
 	if err := db.Create(&doorUsers).Error; err != nil {
 		log.Fatalf("❌ Failed to seed doorlock users: %v", err)
@@ -156,27 +179,28 @@ func seedDoorlockUsers(db *gorm.DB) {
 func seedAttendanceData(db *gorm.DB) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 
+	// PERUBAHAN (Kriteria 7): Menambahkan data "Arrow"
 	attendances := []Attendance{
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 5, 9, 15, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 5, 14, 30, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 5, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 7, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 10, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 6, 9, 0, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 6, 17, 30, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 7, 8, 20, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 7, 9, 5, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 7, 18, 0, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 8, 7, 55, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 1, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 2, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 15, 0, 0, loc)},
-		{Username: "Fajar", AccessID: "A005", Status: "success", CreatedAt: time.Date(2025, 10, 8, 10, 0, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 8, 16, 45, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 9, 8, 30, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 9, 8, 32, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 9, 9, 0, 0, 0, loc)},
-		{Username: "Fajar", AccessID: "A005", Status: "success", CreatedAt: time.Date(2025, 10, 9, 17, 5, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 5, 9, 15, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 5, 14, 30, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 8, 5, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 8, 7, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 8, 10, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 9, 0, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "out", CreatedAt: time.Date(2025, 10, 6, 17, 30, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 7, 8, 20, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 7, 9, 5, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", Arrow: "out", CreatedAt: time.Date(2025, 10, 7, 18, 0, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 8, 7, 55, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 8, 8, 1, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 8, 8, 2, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 8, 8, 15, 0, 0, loc)},
+		{Username: "Fajar", AccessID: "A005", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 8, 10, 0, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "out", CreatedAt: time.Date(2025, 10, 8, 16, 45, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 9, 8, 30, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 9, 8, 32, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 9, 9, 0, 0, 0, loc)},
+		{Username: "Fajar", AccessID: "A005", Status: "success", Arrow: "out", CreatedAt: time.Date(2025, 10, 9, 17, 5, 0, 0, loc)},
 	}
 
 	if err := db.Create(&attendances).Error; err != nil {
@@ -186,7 +210,8 @@ func seedAttendanceData(db *gorm.DB) {
 	log.Println(" 	-> ✅ Attendance data seeded.")
 }
 
-// ... (EncryptAES, DecryptAES tetap sama) ...
+// PERUBAHAN: Fungsi Enkripsi/Dekripsi AES ini sekarang HANYA untuk payload API (Kriteria 4)
+// BUKAN untuk password.
 func EncryptAES(plaintext string) (string, error) {
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
@@ -237,7 +262,7 @@ func DecryptAES(ciphertext string) (string, error) {
 	return string(plaintext), nil
 }
 
-// --- TELEGRAM BOT FUNCTIONS ---
+// --- (Fungsi Telegram & MQTT tetap sama) ---
 func initTelegramBot() {
 	var err error
 	botAPI, err = tgbotapi.NewBotAPI(telegramBotToken)
@@ -264,7 +289,6 @@ func sendTelegramNotification(message string) error {
 	return nil
 }
 
-// --- MQTT FUNCTIONS ---
 func initMQTT() {
 	opts := mqtt.NewClientOptions()
 	opts.AddBroker(mqttBroker)
@@ -296,7 +320,7 @@ func publishMQTT(topic string, message string) error {
 	return nil
 }
 
-// ====== JWT & AUTH MIDDLEWARE ======
+// --- (JWT & Middleware tetap sama) ---
 type jwtClaims struct {
 	Username string `json:"username"`
 	jwt.RegisteredClaims
@@ -350,7 +374,7 @@ func stringToUint(s string) uint {
 	return i
 }
 
-// ====== TREND ANALYSIS FUNCTIONS ======
+// --- (Fungsi Trend Analysis tetap sama) ---
 func analyzeFrequentAccess(db *gorm.DB, hours int) ([]map[string]interface{}, error) {
 	var results []map[string]interface{}
 	
@@ -360,7 +384,7 @@ func analyzeFrequentAccess(db *gorm.DB, hours int) ([]map[string]interface{}, er
 		Select("access_id, username, COUNT(*) as access_count").
 		Where("created_at >= ?", timeThreshold).
 		Group("access_id, username").
-		Having("COUNT(*) > ?", 5). // Threshold: lebih dari 5 akses dalam periode
+		Having("COUNT(*) > ?", 5).
 		Find(&results).Error
 		
 	return results, err
@@ -381,7 +405,7 @@ func analyzeLongOpenDoors(db *gorm.DB, durationThreshold int) ([]map[string]inte
 func main() {
 	db := initDB()
 	initTelegramBot()
-	initMQTT() // Initialize MQTT connection
+	initMQTT()
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -393,35 +417,80 @@ func main() {
 	api := r.Group("/api")
 
 	// ====== LOGIN ======
+	// PERUBAHAN (Kriteria 4): API Login dienkripsi
 	api.POST("/login", func(c *gin.Context) {
-		var req struct {
+		// 1. Definisikan struct untuk request/response plain & encrypted
+		type LoginRequestPlain struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
-		if err := c.BindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
-			return
+		type LoginRequestEncrypted struct {
+			Payload string `json:"payload"`
 		}
-		var u User
-		if err := db.Where("username = ?", req.Username).First(&u).Error; err != nil {
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
+		type LoginResponsePlain struct {
+			Token    string `json:"token"`
+			Username string `json:"username"`
+			Role     string `json:"role"`
+		}
+
+		var reqEncrypted LoginRequestEncrypted
+		if err := c.BindJSON(&reqEncrypted); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request (missing payload)"})
 			return
 		}
 
-		decryptedPassword, err := DecryptAES(u.Password)
+		// 2. Dekripsi payload
+		decryptedPayload, err := DecryptAES(reqEncrypted.Payload)
 		if err != nil {
-			log.Printf("ERROR: Gagal dekripsi password user %s: %v", req.Username, err)
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "failed to decrypt payload"})
+			return
+		}
+
+		// 3. Unmarshal payload
+		var reqPlain LoginRequestPlain
+		if err := json.Unmarshal([]byte(decryptedPayload), &reqPlain); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid payload structure"})
+			return
+		}
+
+		// 4. Logika login (PERUBAHAN Kriteria 3: Menggunakan bcrypt)
+		var u User
+		if err := db.Where("username = ?", reqPlain.Username).First(&u).Error; err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
 
-		if decryptedPassword != req.Password {
+		if !CheckPasswordHash(reqPlain.Password, u.Password) {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
 
+		// 5. Buat token
 		token, _ := makeToken(u.Username)
-		c.JSON(http.StatusOK, gin.H{"token": token, "username": u.Username, "role": u.Role})
+
+		// 6. Siapkan respons plain
+		resPlain := LoginResponsePlain{
+			Token:    token,
+			Username: u.Username,
+			Role:     u.Role,
+		}
+
+		// 7. Marshal respons
+		resPlainJSON, err := json.Marshal(resPlain)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to prepare response"})
+			return
+		}
+
+		// 8. Enkripsi respons
+		encryptedResponse, err := EncryptAES(string(resPlainJSON))
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt response"})
+			return
+		}
+
+		// 9. Kirim respons terenkripsi
+		c.JSON(http.StatusOK, gin.H{"payload": encryptedResponse})
 	})
 
 	// Protected routes
@@ -455,15 +524,16 @@ func main() {
 			return
 		}
 
-		encryptedPassword, err := EncryptAES(req.Password)
+		// PERUBAHAN (Kriteria 3): Menggunakan bcrypt
+		hashedPassword, err := HashPassword(req.Password)
 		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt password"})
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash password"})
 			return
 		}
 
 		user := User{
 			Username:  req.Username,
-			Password:  encryptedPassword,
+			Password:  hashedPassword,
 			Role:      req.Role,
 			IsActive:  true,
 			CreatedAt: time.Now(),
@@ -502,13 +572,14 @@ func main() {
 		user.Role = req.Role
 		user.IsActive = req.IsActive
 
+		// PERUBAHAN (Kriteria 3): Menggunakan bcrypt
 		if req.Password != "" {
-			encryptedPassword, err := EncryptAES(req.Password)
+			hashedPassword, err := HashPassword(req.Password)
 			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt new password"})
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to hash new password"})
 				return
 			}
-			user.Password = encryptedPassword
+			user.Password = hashedPassword
 		}
 
 		if err := db.Save(&user).Error; err != nil {
@@ -548,17 +619,27 @@ func main() {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch doorlock users"})
 			return
 		}
+		// PERUBAHAN (Kriteria 5): PIN tidak dikirim dalam response
 		c.JSON(http.StatusOK, list)
 	})
 
 	doorlock.POST("/users", func(c *gin.Context) {
+		// PERUBAHAN (Kriteria 6): Menambahkan 'Pin'
 		var req struct {
 			Name     string `json:"name"`
 			AccessID string `json:"access_id"`
 			DoorID   string `json:"door_id"`
+			Pin      string `json:"pin"`
 		}
-		if err := c.BindJSON(&req); err != nil || req.Name == "" || req.AccessID == "" || req.DoorID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
+		if err := c.BindJSON(&req); err != nil || req.Name == "" || req.AccessID == "" || req.DoorID == "" || req.Pin == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1, "message": "name, access_id, door_id, and pin are required"})
+			return
+		}
+
+		// PERUBAHAN (Kriteria 6): Hash PIN sebelum disimpan
+		hashedPin, err := HashPassword(req.Pin)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"status": false, "error_code": 4, "message": "failed to hash pin"})
 			return
 		}
 
@@ -566,11 +647,12 @@ func main() {
 			Name:      req.Name,
 			AccessID:  req.AccessID,
 			DoorID:    req.DoorID,
+			Pin:       hashedPin, // Simpan PIN yang sudah di-hash
 			IsActive:  true,
 			CreatedAt: time.Now(),
 		}
 		if err := db.Create(&u).Error; err != nil {
-			c.JSON(http.StatusConflict, gin.H{"status": false, "error_code": 2})
+			c.JSON(http.StatusConflict, gin.H{"status": false, "error_code": 2, "message": "access_id already exists"})
 			return
 		}
 		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
@@ -585,11 +667,16 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0, "message": "deleted successfully"})
 	})
+	
 	// ====== ATTENDANCE ======
 	api.POST("/attendance", func(c *gin.Context) {
-		var req struct{ AccessID string `json:"access_id"` }
-		if err := c.BindJSON(&req); err != nil || req.AccessID == "" {
-			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
+		// PERUBAHAN (Kriteria 7): Menambahkan 'Arrow'
+		var req struct{ 
+			AccessID string `json:"access_id"` 
+			Arrow    string `json:"arrow"` // "in" or "out"
+		}
+		if err := c.BindJSON(&req); err != nil || req.AccessID == "" || req.Arrow == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1, "message": "access_id and arrow are required"})
 			return
 		}
 
@@ -603,6 +690,7 @@ func main() {
 			Username:  doorUser.Name,
 			AccessID:  req.AccessID,
 			Status:    "success",
+			Arrow:     req.Arrow, // PERUBAHAN (Kriteria 7)
 			CreatedAt: time.Now(),
 		}
 		db.Create(&rec)
@@ -611,27 +699,21 @@ func main() {
 	
 	api.GET("/attendance", func(c *gin.Context) {
     var list []Attendance
-    
-		// Query dengan order by created_at descending
 		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
 			log.Printf("Error fetching attendance: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch attendance data"})
 			return
 		}
-		
 		log.Printf("Fetched %d attendance records", len(list))
 		c.JSON(http.StatusOK, list)
 	})
 
-	// ✅ Juga tambahkan handler untuk summary
 	api.GET("/attendance/summary", func(c *gin.Context) {
 		var summary []struct {
 			Date  string `json:"date"`
 			Count int    `json:"count"`
 		}
-
 		sevenDaysAgo := time.Now().AddDate(0, 0, -7)
-
 		db.Model(&Attendance{}).
 			Select("DATE(created_at) as date, COUNT(*) as count").
 			Where("created_at >= ?", sevenDaysAgo).
@@ -639,37 +721,59 @@ func main() {
 			Order("date DESC").
 			Limit(7).
 			Find(&summary)
-
 		c.JSON(http.StatusOK, summary)
 	})
 
 	// ====== ALARM ======
+	// PERUBAHAN (Kriteria 8): Logika diubah
 	api.POST("/alarm", func(c *gin.Context) {
 		var req struct {
 			AlarmType int    `json:"alarm_type"`
-			AccessID  string `json:"access_id"`
+			AccessID  string `json:"access_id"` // Boleh kosong jika type 1
 		}
-		if err := c.BindJSON(&req); err != nil || req.AccessID == "" {
+		if err := c.BindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
 			return
 		}
 
-		var doorUser DoorlockUser
-		if err := db.Where("access_id = ?", req.AccessID).First(&doorUser).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"status": false, "error_code": 2, "message": "access_id not found"})
-			return
-		}
-
-		reason := "Unknown"
+		var username string
+		var reason string
+		
 		if req.AlarmType == 1 {
+			// PERUBAHAN: Tidak perlu access_id valid
 			reason = "3 kali gagal masuk"
+			username = "Unknown" // Karena kita tidak tahu siapa yg gagal
+			
+			// Coba cari user jika access_id diberikan, tapi jangan error jika tidak ada
+			var doorUser DoorlockUser
+			if req.AccessID != "" && db.Where("access_id = ?", req.AccessID).First(&doorUser).Error == nil {
+				username = doorUser.Name
+			}
+
 		} else if req.AlarmType == 2 {
 			reason = "Pintu terbuka > 1 menit"
+			
+			// PERUBAHAN: Wajib access_id untuk alarm type 2
+			if req.AccessID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1, "message": "access_id is required for this alarm type"})
+				return
+			}
+			var doorUser DoorlockUser
+			if err := db.Where("access_id = ?", req.AccessID).First(&doorUser).Error; err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"status": false, "error_code": 2, "message": "access_id not found"})
+				return
+			}
+			username = doorUser.Name
+
+		} else {
+			reason = "Unknown"
+			username = "System"
 		}
 
+
 		al := Alarm{
-			Username:  doorUser.Name,
-			AccessID:  req.AccessID,
+			Username:  username,
+			AccessID:  req.AccessID, // Tetap catat access_id yg (mungkin) gagal
 			Reason:    reason,
 			CreatedAt: time.Now(),
 		}
@@ -681,6 +785,7 @@ func main() {
 
 		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
 
+		// Kirim notifikasi Telegram
 		go func() {
 			loc, _ := time.LoadLocation("Asia/Jakarta")
 			wibTime := al.CreatedAt.In(loc)
@@ -699,6 +804,16 @@ func main() {
 		}()
 	})
 
+	api.GET("/alarms", func(c *gin.Context) {
+		var list []Alarm
+		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch alarms"})
+			return
+		}
+		c.JSON(http.StatusOK, list)
+	})
+
+	// --- (Health, Root, Trends, MQTT Control, Dashboard Stats tetap sama) ---
 	api.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
@@ -713,17 +828,8 @@ func main() {
 		})
 	})
 
-	api.GET("/alarms", func(c *gin.Context) {
-	var list []Alarm
-		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch alarms"})
-			return
-		}
-		c.JSON(http.StatusOK, list)
-	})
-	// ====== TREND ANALYSIS ENDPOINTS ======
 	api.GET("/trends/frequent-access", func(c *gin.Context) {
-		hours := 24 // Default: analisis 24 jam terakhir
+		hours := 24
 		if h := c.Query("hours"); h != "" {
 			fmt.Sscanf(h, "%d", &hours)
 		}
@@ -741,7 +847,7 @@ func main() {
 	})
 
 	api.GET("/trends/long-open-doors", func(c *gin.Context) {
-		durationThreshold := 60 // Default: 60 detik
+		durationThreshold := 60
 		if d := c.Query("duration"); d != "" {
 			fmt.Sscanf(d, "%d", &durationThreshold)
 		}
@@ -787,11 +893,10 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"status": "success"})
 	})
 
-	// ====== MQTT CONTROL ENDPOINTS ======
 	api.POST("/control/doorlock", func(c *gin.Context) {
 		var req struct {
 			DoorID  string `json:"door_id"`
-			Command string `json:"command"` // "lock" or "unlock"
+			Command string `json:"command"`
 		}
 		
 		if err := c.BindJSON(&req); err != nil {
@@ -820,8 +925,8 @@ func main() {
 	api.POST("/control/buzzer", func(c *gin.Context) {
 		var req struct {
 			BuzzerID string `json:"buzzer_id"`
-			Command  string `json:"command"` // "on" or "off"
-			Duration int    `json:"duration,omitempty"` // Durasi dalam detik (opsional)
+			Command  string `json:"command"`
+			Duration int    `json:"duration,omitempty"`
 		}
 		
 		if err := c.BindJSON(&req); err != nil {
@@ -847,7 +952,6 @@ func main() {
 		})
 	})
 
-	// ====== DASHBOARD STATISTICS ======
 	api.GET("/dashboard/stats", func(c *gin.Context) {
 		var stats struct {
 			TotalUsers        int64 `json:"total_users"`
@@ -856,15 +960,12 @@ func main() {
 			TodayAttendance   int64 `json:"today_attendance"`
 		}
 
-		// Hitung statistik
 		db.Model(&User{}).Count(&stats.TotalUsers)
 		db.Model(&Attendance{}).Count(&stats.TotalAttendance)
 		
-		// Alarms dalam 24 jam terakhir
 		today := time.Now().AddDate(0, 0, -1)
 		db.Model(&Alarm{}).Where("created_at >= ?", today).Count(&stats.ActiveAlarms)
 		
-		// Attendance hari ini
 		todayStart := time.Now().Truncate(24 * time.Hour)
 		db.Model(&Attendance{}).Where("created_at >= ?", todayStart).Count(&stats.TodayAttendance)
 

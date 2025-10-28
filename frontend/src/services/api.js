@@ -1,4 +1,63 @@
-const API_BASE = "http://localhost:8090/api"; // Pastikan port sesuai backend
+// Menggunakan Web Crypto API (bawaan browser) untuk AES-GCM
+// Kunci ini HARUS sama dengan 'aesKey' di main.go
+const AES_KEY = "kuncirahasia1234"; 
+
+// --- Fungsi Enkripsi/Dekripsi AES-GCM ---
+
+async function getCryptoKey() {
+  const keyBytes = new TextEncoder().encode(AES_KEY);
+  return await window.crypto.subtle.importKey(
+    "raw",
+    keyBytes,
+    "AES-GCM",
+    true,
+    ["encrypt", "decrypt"]
+  );
+}
+
+async function encryptAES(plaintext) {
+  const key = await getCryptoKey();
+  const iv = window.crypto.getRandomValues(new Uint8Array(12)); // Nonce 12 bytes untuk GCM
+  const encodedText = new TextEncoder().encode(plaintext);
+
+  const ciphertextBuffer = await window.crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv },
+    key,
+    encodedText
+  );
+
+  const combined = new Uint8Array(iv.length + ciphertextBuffer.byteLength);
+  combined.set(iv);
+  combined.set(new Uint8Array(ciphertextBuffer), iv.length);
+
+  return btoa(String.fromCharCode.apply(null, combined));
+}
+
+async function decryptAES(base64Ciphertext) {
+  try {
+    const key = await getCryptoKey();
+    
+    const combined = new Uint8Array(atob(base64Ciphertext).split("").map(c => c.charCodeAt(0)));
+
+    const iv = combined.slice(0, 12);
+    const ciphertext = combined.slice(12);
+
+    const decryptedBuffer = await window.crypto.subtle.decrypt(
+      { name: "AES-GCM", iv: iv },
+      key,
+      ciphertext
+    );
+
+    return new TextDecoder().decode(decryptedBuffer);
+  } catch (err) {
+    console.error("AES Decryption Failed:", err);
+    throw new Error("Failed to decrypt response from server.");
+  }
+}
+
+// --- API Service ---
+
+const API_BASE = "http://localhost:8090/api";
 
 export function getToken() {
   return localStorage.getItem("token");
@@ -6,8 +65,13 @@ export function getToken() {
 
 async function handleResponse(res) {
   if (!res.ok) {
-    const errorText = await res.text();
-    throw new Error(errorText || `HTTP ${res.status}`);
+    let errorData;
+    try {
+        errorData = await res.json();
+    } catch (e) {
+        errorData = { error: await res.text() || `HTTP ${res.status}` };
+    }
+    throw new Error(errorData.error || errorData.message || `HTTP ${res.status}`);
   }
   
   const contentType = res.headers.get('content-type');
@@ -64,13 +128,18 @@ export async function apiDelete(path, auth = true) {
 }
 
 export async function login(username, password) {
-  const res = await apiPost("/login", { username, password }, false);
-  if (res.token) {
-    localStorage.setItem("token", res.token);
-    localStorage.setItem("username", res.username);
-    localStorage.setItem("role", res.role);
+  const plainPayload = JSON.stringify({ username, password });
+  const encryptedPayload = await encryptAES(plainPayload);
+  const res = await apiPost("/login", { payload: encryptedPayload }, false);
+  const decryptedPayload = await decryptAES(res.payload);
+  const userData = JSON.parse(decryptedPayload);
+
+  if (userData.token) {
+    localStorage.setItem("token", userData.token);
+    localStorage.setItem("username", userData.username);
+    localStorage.setItem("role", userData.role);
   }
-  return res;
+  return userData;
 }
 
 export function logout() {
@@ -97,8 +166,8 @@ export async function getAttendance() {
   return apiGet("/attendance");
 }
 
-export async function createAttendance(accessId) {
-  return apiPost("/attendance", { access_id: accessId });
+export async function createAttendance(accessId, arrow) {
+  return apiPost("/attendance", { access_id: accessId, arrow: arrow });
 }
 
 // Alarms API
@@ -148,7 +217,6 @@ export async function getDoorlockUsersCount() {
   }
 }
 
-// ====== NEW TREND ANALYSIS APIs ======
 export async function getFrequentAccess(hours = 24) {
   try {
     const data = await apiGet(`/trends/frequent-access?hours=${hours}`);
@@ -179,7 +247,6 @@ export async function logDoorOpen(doorData) {
   }
 }
 
-// ====== NEW MQTT CONTROL APIs ======
 export async function controlDoorLock(doorId, command) {
   try {
     const data = await apiPost("/control/doorlock", {
@@ -207,12 +274,12 @@ export async function controlBuzzer(buzzerId, command, duration = 5) {
   }
 }
 
-// ====== NEW DASHBOARD STATS API ======
 export async function getDashboardStats() {
   try {
     const data = await apiGet("/dashboard/stats");
     return data;
-  } catch (error) {
+  } catch (error)
+    {
     console.error('Error fetching dashboard stats:', error);
     throw error;
   }
