@@ -3,8 +3,11 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/md5"
 	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,7 +25,7 @@ import (
 )
 
 var jwtSecret = []byte("super-secret-key")
-var aesKey = []byte("kuncirahasia1234")
+var aesKey = []byte("12345678901234567890123456789012") // 32 bytes exactly for AES-256
 
 // --- TELEGRAM ---
 var (
@@ -34,7 +37,7 @@ var (
 // --- MQTT Configuration ---
 var (
 	mqttClient mqtt.Client
-	mqttBroker = "tcp://localhost:1883" // Ganti dengan broker MQTT Anda
+	mqttBroker = "tcp://localhost:1883"
 	mqttClientID = "doorlock_backend"
 )
 
@@ -42,7 +45,7 @@ var (
 type User struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
 	Username  string    `json:"username" gorm:"uniqueIndex"`
-	Password  string    `json:"-"`
+	Password  string    `json:"-"` // MD5 hash
 	Role      string    `json:"role"`
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
@@ -53,6 +56,7 @@ type Attendance struct {
 	Username  string    `json:"username"`
 	AccessID  string    `json:"access_id"`
 	Status    string    `json:"status"`
+	Arrow     string    `json:"arrow"` // "in" atau "out"
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -69,6 +73,7 @@ type DoorlockUser struct {
 	Name      string    `json:"name"`
 	AccessID  string    `json:"access_id" gorm:"uniqueIndex"`
 	DoorID    string    `json:"door_id"`
+	Pin       string    `json:"pin" gorm:"size:6"`
 	IsActive  bool      `json:"is_active"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -79,7 +84,7 @@ type DoorOpenLog struct {
 	DoorID    string    `json:"door_id"`
 	AccessID  string    `json:"access_id"`
 	Username  string    `json:"username"`
-	Duration  int       `json:"duration"` // Durasi dalam detik
+	Duration  int       `json:"duration"`
 	CreatedAt time.Time `json:"created_at"`
 }
 
@@ -88,7 +93,7 @@ type AccessFrequency struct {
 	AccessID     string    `json:"access_id"`
 	Username     string    `json:"username"`
 	AccessCount  int       `json:"access_count"`
-	TimeFrame    string    `json:"time_frame"` // hourly, daily, weekly
+	TimeFrame    string    `json:"time_frame"`
 	PeriodStart  time.Time `json:"period_start"`
 	PeriodEnd    time.Time `json:"period_end"`
 }
@@ -100,7 +105,6 @@ func initDB() *gorm.DB {
 		log.Fatal(err)
 	}
 	
-	// Tambahkan migrasi untuk model baru
 	if err := db.AutoMigrate(&User{}, &Attendance{}, &Alarm{}, &DoorlockUser{}, 
 		&DoorOpenLog{}, &AccessFrequency{}); err != nil {
 		log.Fatal(err)
@@ -119,13 +123,9 @@ func initDB() *gorm.DB {
 	return db
 }
 
-// ... (seedUsers, seedDoorlockUsers, seedAttendanceData tetap sama) ...
 func seedUsers(db *gorm.DB) {
-	adminPass, err := EncryptAES("admin123")
-	if err != nil { log.Fatalf("Gagal enkripsi seed pass admin: %v", err) }
-	
-	userPass, err := EncryptAES("password123")
-	if err != nil { log.Fatalf("Gagal enkripsi seed pass user: %v", err) }
+	adminPass := HashMD5("admin123")
+	userPass := HashMD5("password123")
 
 	users := []User{
 		{Username: "admin", Password: adminPass, Role: "admin", IsActive: true, CreatedAt: time.Now()},
@@ -141,11 +141,11 @@ func seedUsers(db *gorm.DB) {
 
 func seedDoorlockUsers(db *gorm.DB) {
 	doorUsers := []DoorlockUser{
-		{Name: "Budi", AccessID: "A001", DoorID: "D01", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Citra", AccessID: "A002", DoorID: "D01", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Dewi", AccessID: "A003", DoorID: "D02", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Eka", AccessID: "A004", DoorID: "D02", IsActive: true, CreatedAt: time.Now()},
-		{Name: "Fajar", AccessID: "A005", DoorID: "D01", IsActive: false, CreatedAt: time.Now()},
+		{Name: "Budi", AccessID: "A001", DoorID: "D01", Pin: "123456", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Citra", AccessID: "A002", DoorID: "D01", Pin: "654321", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Dewi", AccessID: "A003", DoorID: "D02", Pin: "111111", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Eka", AccessID: "A004", DoorID: "D02", Pin: "222222", IsActive: true, CreatedAt: time.Now()},
+		{Name: "Fajar", AccessID: "A005", DoorID: "D01", Pin: "333333", IsActive: false, CreatedAt: time.Now()},
 	}
 	if err := db.Create(&doorUsers).Error; err != nil {
 		log.Fatalf("❌ Failed to seed doorlock users: %v", err)
@@ -157,26 +157,17 @@ func seedAttendanceData(db *gorm.DB) {
 	loc, _ := time.LoadLocation("Asia/Jakarta")
 
 	attendances := []Attendance{
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 5, 9, 15, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 5, 14, 30, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 5, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 7, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 6, 8, 10, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 6, 9, 0, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 6, 17, 30, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 7, 8, 20, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 7, 9, 5, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 7, 18, 0, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 8, 7, 55, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 1, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 2, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 8, 8, 15, 0, 0, loc)},
-		{Username: "Fajar", AccessID: "A005", Status: "success", CreatedAt: time.Date(2025, 10, 8, 10, 0, 0, 0, loc)},
-		{Username: "Budi", AccessID: "A001", Status: "success", CreatedAt: time.Date(2025, 10, 8, 16, 45, 0, 0, loc)},
-		{Username: "Citra", AccessID: "A002", Status: "success", CreatedAt: time.Date(2025, 10, 9, 8, 30, 0, 0, loc)},
-		{Username: "Dewi", AccessID: "A003", Status: "success", CreatedAt: time.Date(2025, 10, 9, 8, 32, 0, 0, loc)},
-		{Username: "Eka", AccessID: "A004", Status: "success", CreatedAt: time.Date(2025, 10, 9, 9, 0, 0, 0, loc)},
-		{Username: "Fajar", AccessID: "A005", Status: "success", CreatedAt: time.Date(2025, 10, 9, 17, 5, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 5, 9, 15, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 5, 14, 30, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "out", CreatedAt: time.Date(2025, 10, 5, 17, 0, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 8, 5, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 8, 7, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 8, 10, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 6, 9, 0, 0, 0, loc)},
+		{Username: "Budi", AccessID: "A001", Status: "success", Arrow: "out", CreatedAt: time.Date(2025, 10, 6, 17, 30, 0, 0, loc)},
+		{Username: "Citra", AccessID: "A002", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 7, 8, 20, 0, 0, loc)},
+		{Username: "Dewi", AccessID: "A003", Status: "success", Arrow: "in", CreatedAt: time.Date(2025, 10, 7, 9, 5, 0, 0, loc)},
+		{Username: "Eka", AccessID: "A004", Status: "success", Arrow: "out", CreatedAt: time.Date(2025, 10, 7, 18, 0, 0, 0, loc)},
 	}
 
 	if err := db.Create(&attendances).Error; err != nil {
@@ -186,52 +177,62 @@ func seedAttendanceData(db *gorm.DB) {
 	log.Println(" 	-> ✅ Attendance data seeded.")
 }
 
-// ... (EncryptAES, DecryptAES tetap sama) ...
+// ====== HASHING & ENCRYPTION FUNCTIONS ======
+func HashMD5(password string) string {
+	hash := md5.Sum([]byte(password))
+	return hex.EncodeToString(hash[:])
+}
+
+// Simple AES encryption function
 func EncryptAES(plaintext string) (string, error) {
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot create cipher: %v", err)
 	}
 
+	// Use GCM mode
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot create GCM: %v", err)
 	}
 
+	// Create a nonce
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot read random bytes: %v", err)
 	}
 
+	// Encrypt the data
 	ciphertext := gcm.Seal(nonce, nonce, []byte(plaintext), nil)
 	return base64.StdEncoding.EncodeToString(ciphertext), nil
 }
 
 func DecryptAES(ciphertext string) (string, error) {
+	// Decode from base64
 	data, err := base64.StdEncoding.DecodeString(ciphertext)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot decode base64: %v", err)
 	}
 
 	block, err := aes.NewCipher(aesKey)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot create cipher: %v", err)
 	}
 
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("cannot create GCM: %v", err)
 	}
 
 	nonceSize := gcm.NonceSize()
 	if len(data) < nonceSize {
-		return "", errors.New("ciphertext terlalu pendek")
+		return "", errors.New("ciphertext too short")
 	}
 
 	nonce, ciphertextBytes := data[:nonceSize], data[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertextBytes, nil)
 	if err != nil {
-		return "", errors.New("gagal dekripsi")
+		return "", fmt.Errorf("decryption failed: %v", err)
 	}
 
 	return string(plaintext), nil
@@ -360,7 +361,7 @@ func analyzeFrequentAccess(db *gorm.DB, hours int) ([]map[string]interface{}, er
 		Select("access_id, username, COUNT(*) as access_count").
 		Where("created_at >= ?", timeThreshold).
 		Group("access_id, username").
-		Having("COUNT(*) > ?", 5). // Threshold: lebih dari 5 akses dalam periode
+		Having("COUNT(*) > ?", 5).
 		Find(&results).Error
 		
 	return results, err
@@ -378,10 +379,28 @@ func analyzeLongOpenDoors(db *gorm.DB, durationThreshold int) ([]map[string]inte
 	return results, err
 }
 
+// ====== ENCRYPTED LOGIN HANDLER ======
+func encryptResponse(data interface{}) (map[string]interface{}, error) {
+	jsonData, err := json.Marshal(data)
+	if err != nil {
+		return nil, fmt.Errorf("cannot marshal data: %v", err)
+	}
+	
+	encrypted, err := EncryptAES(string(jsonData))
+	if err != nil {
+		return nil, fmt.Errorf("cannot encrypt data: %v", err)
+	}
+	
+	return map[string]interface{}{
+		"data": encrypted,
+	}, nil
+}
+
+// ====== MAIN APPLICATION ======
 func main() {
 	db := initDB()
 	initTelegramBot()
-	initMQTT() // Initialize MQTT connection
+	initMQTT()
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -392,36 +411,139 @@ func main() {
 
 	api := r.Group("/api")
 
-	// ====== LOGIN ======
+	// ====== LOGIN (DENGAN ENKRIPSI) ======
 	api.POST("/login", func(c *gin.Context) {
+		var encryptedReq struct {
+			Data string `json:"data"`
+		}
+
+		if err := c.BindJSON(&encryptedReq); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request format"})
+			return
+		}
+
+		if encryptedReq.Data == "" {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "encrypted data is required"})
+			return
+		}
+
+		// Decrypt the request data
+		decryptedData, err := DecryptAES(encryptedReq.Data)
+		if err != nil {
+			log.Printf("Decryption error: %v", err)
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to decrypt data: " + err.Error()})
+			return
+		}
+
+		// Parse decrypted data
 		var req struct {
 			Username string `json:"username"`
 			Password string `json:"password"`
 		}
+
+		if err := json.Unmarshal([]byte(decryptedData), &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid decrypted data format"})
+			return
+		}
+
+		// Validate credentials
+		var u User
+		if err := db.Where("username = ?", req.Username).First(&u).Error; err != nil {
+			// Return encrypted error response
+			encryptedResp, err := encryptResponse(gin.H{"error": "invalid username or password"})
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt response"})
+				return
+			}
+			c.JSON(http.StatusUnauthorized, encryptedResp)
+			return
+		}
+
+		// Verify MD5 hash
+		hashedInput := HashMD5(req.Password)
+		if u.Password != hashedInput {
+			encryptedResp, err := encryptResponse(gin.H{"error": "invalid username or password"})
+			if err != nil {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt response"})
+				return
+			}
+			c.JSON(http.StatusUnauthorized, encryptedResp)
+			return
+		}
+
+		// Generate token and send encrypted response
+		token, _ := makeToken(u.Username)
+		responseData := gin.H{
+			"token": token, 
+			"username": u.Username, 
+			"role": u.Role,
+		}
+		
+		encryptedResp, err := encryptResponse(responseData)
+		if err != nil {
+			log.Printf("Encryption error: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt response: " + err.Error()})
+			return
+		}
+		
+		c.JSON(http.StatusOK, encryptedResp)
+	})
+
+	// ====== UTILITY ENDPOINT UNTUK ENCRYPT DATA TESTING ======
+	api.POST("/encrypt-test", func(c *gin.Context) {
+		var data map[string]interface{}
+		if err := c.BindJSON(&data); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid data format"})
+			return
+		}
+		
+		jsonData, err := json.Marshal(data)
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "cannot marshal data"})
+			return
+		}
+		
+		encrypted, err := EncryptAES(string(jsonData))
+		if err != nil {
+			log.Printf("Encryption error in /encrypt-test: %v", err)
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "encryption failed: " + err.Error()})
+			return
+		}
+		
+		c.JSON(http.StatusOK, gin.H{"encrypted": encrypted})
+	})
+
+	// ====== SIMPLE LOGIN (BACKUP - TANPA ENKRIPSI) ======
+	api.POST("/login-simple", func(c *gin.Context) {
+		var req struct {
+			Username string `json:"username"`
+			Password string `json:"password"`
+		}
+
 		if err := c.BindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad request"})
 			return
 		}
+
 		var u User
 		if err := db.Where("username = ?", req.Username).First(&u).Error; err != nil {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
 
-		decryptedPassword, err := DecryptAES(u.Password)
-		if err != nil {
-			log.Printf("ERROR: Gagal dekripsi password user %s: %v", req.Username, err)
-			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
-			return
-		}
-
-		if decryptedPassword != req.Password {
+		// Verify MD5 hash
+		hashedInput := HashMD5(req.Password)
+		if u.Password != hashedInput {
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid username or password"})
 			return
 		}
 
 		token, _ := makeToken(u.Username)
-		c.JSON(http.StatusOK, gin.H{"token": token, "username": u.Username, "role": u.Role})
+		c.JSON(http.StatusOK, gin.H{
+			"token": token, 
+			"username": u.Username, 
+			"role": u.Role,
+		})
 	})
 
 	// Protected routes
@@ -455,15 +577,10 @@ func main() {
 			return
 		}
 
-		encryptedPassword, err := EncryptAES(req.Password)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt password"})
-			return
-		}
-
+		hashedPassword := HashMD5(req.Password)
 		user := User{
 			Username:  req.Username,
-			Password:  encryptedPassword,
+			Password:  hashedPassword,
 			Role:      req.Role,
 			IsActive:  true,
 			CreatedAt: time.Now(),
@@ -503,12 +620,8 @@ func main() {
 		user.IsActive = req.IsActive
 
 		if req.Password != "" {
-			encryptedPassword, err := EncryptAES(req.Password)
-			if err != nil {
-				c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to encrypt new password"})
-				return
-			}
-			user.Password = encryptedPassword
+			hashedPassword := HashMD5(req.Password)
+			user.Password = hashedPassword
 		}
 
 		if err := db.Save(&user).Error; err != nil {
@@ -540,7 +653,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{"message": "user deleted successfully"})
 	})
 
-	// ====== DOORLOCK USERS ======
+	// ====== DOORLOCK USERS (UPDATED WITH PIN) ======
 	doorlock := api.Group("/doorlock")
 	doorlock.GET("/users", func(c *gin.Context) {
 		var list []DoorlockUser
@@ -556,8 +669,9 @@ func main() {
 			Name     string `json:"name"`
 			AccessID string `json:"access_id"`
 			DoorID   string `json:"door_id"`
+			Pin      string `json:"pin"`
 		}
-		if err := c.BindJSON(&req); err != nil || req.Name == "" || req.AccessID == "" || req.DoorID == "" {
+		if err := c.BindJSON(&req); err != nil || req.Name == "" || req.AccessID == "" || req.DoorID == "" || req.Pin == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
 			return
 		}
@@ -566,6 +680,7 @@ func main() {
 			Name:      req.Name,
 			AccessID:  req.AccessID,
 			DoorID:    req.DoorID,
+			Pin:       req.Pin,
 			IsActive:  true,
 			CreatedAt: time.Now(),
 		}
@@ -585,10 +700,14 @@ func main() {
 		}
 		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0, "message": "deleted successfully"})
 	})
-	// ====== ATTENDANCE ======
+
+	// ====== ATTENDANCE (UPDATED WITH ARROW) ======
 	api.POST("/attendance", func(c *gin.Context) {
-		var req struct{ AccessID string `json:"access_id"` }
-		if err := c.BindJSON(&req); err != nil || req.AccessID == "" {
+		var req struct{ 
+			AccessID string `json:"access_id"`
+			Arrow    string `json:"arrow"` // "in" atau "out"
+		}
+		if err := c.BindJSON(&req); err != nil || req.AccessID == "" || req.Arrow == "" {
 			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
 			return
 		}
@@ -603,6 +722,7 @@ func main() {
 			Username:  doorUser.Name,
 			AccessID:  req.AccessID,
 			Status:    "success",
+			Arrow:     req.Arrow,
 			CreatedAt: time.Now(),
 		}
 		db.Create(&rec)
@@ -610,20 +730,16 @@ func main() {
 	})
 	
 	api.GET("/attendance", func(c *gin.Context) {
-    var list []Attendance
-    
-		// Query dengan order by created_at descending
+		var list []Attendance
 		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
 			log.Printf("Error fetching attendance: %v", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch attendance data"})
 			return
 		}
-		
 		log.Printf("Fetched %d attendance records", len(list))
 		c.JSON(http.StatusOK, list)
 	})
 
-	// ✅ Juga tambahkan handler untuk summary
 	api.GET("/attendance/summary", func(c *gin.Context) {
 		var summary []struct {
 			Date  string `json:"date"`
@@ -643,21 +759,38 @@ func main() {
 		c.JSON(http.StatusOK, summary)
 	})
 
-	// ====== ALARM ======
+	// ====== ALARM (UPDATED - NO ACCESS_ID FILTER FOR TYPE 1) ======
 	api.POST("/alarm", func(c *gin.Context) {
 		var req struct {
 			AlarmType int    `json:"alarm_type"`
 			AccessID  string `json:"access_id"`
 		}
-		if err := c.BindJSON(&req); err != nil || req.AccessID == "" {
+		if err := c.BindJSON(&req); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
 			return
 		}
 
-		var doorUser DoorlockUser
-		if err := db.Where("access_id = ?", req.AccessID).First(&doorUser).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"status": false, "error_code": 2, "message": "access_id not found"})
-			return
+		var username string
+		var accessID string
+
+		// Untuk alarm type 1 (gagal masuk), skip access_id validation
+		if req.AlarmType == 1 {
+			username = "Unknown"
+			accessID = req.AccessID
+		} else {
+			// Untuk alarm type lainnya, validasi access_id
+			if req.AccessID == "" {
+				c.JSON(http.StatusBadRequest, gin.H{"status": false, "error_code": 1})
+				return
+			}
+			
+			var doorUser DoorlockUser
+			if err := db.Where("access_id = ?", req.AccessID).First(&doorUser).Error; err != nil {
+				c.JSON(http.StatusNotFound, gin.H{"status": false, "error_code": 2, "message": "access_id not found"})
+				return
+			}
+			username = doorUser.Name
+			accessID = req.AccessID
 		}
 
 		reason := "Unknown"
@@ -668,8 +801,8 @@ func main() {
 		}
 
 		al := Alarm{
-			Username:  doorUser.Name,
-			AccessID:  req.AccessID,
+			Username:  username,
+			AccessID:  accessID,
 			Reason:    reason,
 			CreatedAt: time.Now(),
 		}
@@ -681,6 +814,7 @@ func main() {
 
 		c.JSON(http.StatusOK, gin.H{"status": true, "error_code": 0})
 
+		// Send Telegram notification
 		go func() {
 			loc, _ := time.LoadLocation("Asia/Jakarta")
 			wibTime := al.CreatedAt.In(loc)
@@ -699,6 +833,16 @@ func main() {
 		}()
 	})
 
+	api.GET("/alarms", func(c *gin.Context) {
+		var list []Alarm
+		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch alarms"})
+			return
+		}
+		c.JSON(http.StatusOK, list)
+	})
+
+	// ====== HEALTH & ROOT ENDPOINTS ======
 	api.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":    "healthy",
@@ -706,6 +850,7 @@ func main() {
 			"service":   "doorlock-backend",
 		})
 	})
+	
 	r.GET("/", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"message": "Doorlock Backend API",
@@ -713,17 +858,9 @@ func main() {
 		})
 	})
 
-	api.GET("/alarms", func(c *gin.Context) {
-	var list []Alarm
-		if err := db.Order("created_at desc").Find(&list).Error; err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch alarms"})
-			return
-		}
-		c.JSON(http.StatusOK, list)
-	})
 	// ====== TREND ANALYSIS ENDPOINTS ======
 	api.GET("/trends/frequent-access", func(c *gin.Context) {
-		hours := 24 // Default: analisis 24 jam terakhir
+		hours := 24
 		if h := c.Query("hours"); h != "" {
 			fmt.Sscanf(h, "%d", &hours)
 		}
@@ -741,7 +878,7 @@ func main() {
 	})
 
 	api.GET("/trends/long-open-doors", func(c *gin.Context) {
-		durationThreshold := 60 // Default: 60 detik
+		durationThreshold := 60
 		if d := c.Query("duration"); d != "" {
 			fmt.Sscanf(d, "%d", &durationThreshold)
 		}
@@ -791,7 +928,7 @@ func main() {
 	api.POST("/control/doorlock", func(c *gin.Context) {
 		var req struct {
 			DoorID  string `json:"door_id"`
-			Command string `json:"command"` // "lock" or "unlock"
+			Command string `json:"command"`
 		}
 		
 		if err := c.BindJSON(&req); err != nil {
@@ -820,8 +957,8 @@ func main() {
 	api.POST("/control/buzzer", func(c *gin.Context) {
 		var req struct {
 			BuzzerID string `json:"buzzer_id"`
-			Command  string `json:"command"` // "on" or "off"
-			Duration int    `json:"duration,omitempty"` // Durasi dalam detik (opsional)
+			Command  string `json:"command"`
+			Duration int    `json:"duration,omitempty"`
 		}
 		
 		if err := c.BindJSON(&req); err != nil {
@@ -856,15 +993,12 @@ func main() {
 			TodayAttendance   int64 `json:"today_attendance"`
 		}
 
-		// Hitung statistik
 		db.Model(&User{}).Count(&stats.TotalUsers)
 		db.Model(&Attendance{}).Count(&stats.TotalAttendance)
 		
-		// Alarms dalam 24 jam terakhir
 		today := time.Now().AddDate(0, 0, -1)
 		db.Model(&Alarm{}).Where("created_at >= ?", today).Count(&stats.ActiveAlarms)
 		
-		// Attendance hari ini
 		todayStart := time.Now().Truncate(24 * time.Hour)
 		db.Model(&Attendance{}).Where("created_at >= ?", todayStart).Count(&stats.TodayAttendance)
 
