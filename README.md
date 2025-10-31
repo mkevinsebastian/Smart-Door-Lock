@@ -1,87 +1,90 @@
-# Smart Door Lock System
+# SMART DOOR LOCK SYSTEM
+## IoT Project - Binus University
 
-Project ini merupakan implementasi sistem **Smart Door Lock** berbasis:
-- Backend: Golang (Gin + SQLite)
-- Frontend: React + Vite
-
-## Architecture
-Frontend (React) 
-    ↓ HTTP/REST
+## 📋 PROJECT OVERVIEW
+Project ini merupakan implementasi sistem **Smart Door Lock** berbasis IoT dengan arsitektur:
+Frontend (React)
+↓ HTTP/REST
 Backend (Golang) → SQLite Database
-    ↓ MQTT
+↓ MQTT
 MQTT Broker (Mosquitto)
-    ↓
+↓
 IoT Devices (Door Lock, Buzzer, Sensors)
-    ↑
+↑
 Telegram Bot ← Notifications
 
-## 🚀 Fitur Utama
-1. **Login & JWT Authentication**
-   - Admin dan user dengan proteksi token.
-2. **Manajemen User**
-   - Tambah user baru
-   - Hapus user
-   - List semua user
-3. **Attendance**
-   - Mencatat akses masuk user
-   - Melihat daftar riwayat attendance
-4. **Alarm**
-   - Trigger alarm (3x gagal masuk atau pintu terbuka > 1 menit)
-   - List riwayat alarm
 
-## 📂 Struktur Project
+## 🚀 FITUR UTAMA
+
+### 1. Authentication & Security
+- ✅ Login dengan JWT Authentication
+- ✅ Encrypted communication
+- ✅ Role-based access (Admin/User)
+
+### 2. User Management  
+- ✅ System users management
+- ✅ Doorlock users dengan PIN 2FA
+- ✅ Real-time user synchronization via MQTT
+
+### 3. Access Control & Monitoring
+- ✅ Automatic attendance recording
+- ✅ Real-time door status monitoring
+- ✅ Alarm system dengan Telegram notifications
+
+### 4. Dashboard & Analytics
+- ✅ Real-time dashboard dengan auto-refresh
+- ✅ Separate Visitor In/Out charts
+- ✅ Trend analysis (frequent access, long open doors)
+
+### 5. IoT Integration
+- ✅ MQTT-based device control
+- ✅ Door lock remote control
+- ✅ Buzzer control
+- ✅ Real-time status updates
+
+## 📂 PROJECT STRUCTURE
 Smart-Door-Lock/
-├── docker-compose.yml          # Docker compose setup
-├── .env.example               # Environment variables template
-├── backend/                   # Golang backend
-│   ├── main.go
-│   ├── go.mod
-│   ├── go.sum
-│   ├── Dockerfile
-│   └── data.db (auto-generated)
-├── frontend/                  # React frontend
-│   ├── src/
-│   │   ├── pages/
-│   │   ├── components/
-│   │   └── services/
-│   ├── package.json
-│   ├── vite.config.js
-│   └── Dockerfile
-├── mosquitto/                 # MQTT broker config
-│   └── config/
-│       └── mosquitto.conf
-└── scripts/                   # Management scripts
-    ├── start.sh
-    ├── stop.sh
-    └── logs.sh
+├── backend/ # Golang Backend API
+│ ├── main.go # Main application
+│ ├── go.mod # Go dependencies
+│ ├── data.db # SQLite database (auto-generated)
+│ └── Dockerfile # Docker configuration
+├── frontend/ # React Frontend
+│ ├── src/
+│ │ ├── components/ # React components
+│ │ ├── services/
+│ │ │ └── api.js # API services & MQTT
+│ │ └── pages/ # Application pages
+│ └── package.json
+├── mosquitto/ # MQTT Broker config
+│ └── config/
+│ └── mosquitto.conf
+└── docker-compose.yml # Docker compose setup
 
-## 🛠️ Cara Menjalankan
+## 🛠️ PREREQUISITES
 
-### Backend
+### Required Software:
+1. **Node.js** (v16 or higher) - for frontend
+2. **Go** (v1.21 or higher) - for backend  
+3. **Docker Desktop** - for MQTT broker
+4. **Git** - version control
+
+### Optional Tools for Testing:
+1. **MQTTX** (GUI MQTT client) - download from https://mqttx.app/
+2. **Postman** - for API testing
+
+## 🚀 QUICK START
+
+### OPTION 1: DEVELOPMENT MODE (Recommended for Coding)
+```bash
+# Terminal 1 - Start MQTT Broker
+docker-compose up -d mosquitto
+
+# Terminal 2 - Start Backend (Hot Reload)
 cd backend
 go run main.go
 
-- Backend berjalan di: `http://localhost8090`
-
-### Frontend
+# Terminal 3 - Start Frontend
 cd frontend
-bun install
-bun dev
-
-- Frontend berjalan di: `http://localhost:5173`
-
-## Docker
-# Build and start all services
-docker compose up -d --build
-
-# Check status
-docker compose ps
-
-# View logs
-docker compose logs -f
-
-## 📌 Catatan
-- File database `backend/data.db` sudah di-`.gitignore`.
-- Default admin login:
-  - Username: `admin`
-  - Password: `admin123`
+bun run dev
+```
