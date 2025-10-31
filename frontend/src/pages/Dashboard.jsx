@@ -8,8 +8,7 @@ import {
   getFrequentAccess,
   getLongOpenDoors,
   getDashboardStats,
-  controlDoorLock,
-  controlBuzzer
+  mqttService
 } from "../services/api";
 import {
   LineChart,
@@ -23,7 +22,8 @@ import {
   ResponsiveContainer,
   PieChart,
   Pie,
-  Cell
+  Cell,
+  Legend
 } from "recharts";
 
 export default function Dashboard() {
@@ -41,18 +41,45 @@ export default function Dashboard() {
   const [dashboardStats, setDashboardStats] = useState({});
   const [activeTab, setActiveTab] = useState('overview');
 
-  // State for device control
-  const [doorControl, setDoorControl] = useState({ doorId: 'D01', command: 'lock' });
-  const [buzzerControl, setBuzzerControl] = useState({ 
-    buzzerId: 'B01', 
-    command: 'on', 
-    duration: 5 
-  });
-  const [controlLoading, setControlLoading] = useState(false);
+  // State for attendance charts
+  const [attendanceIn, setAttendanceIn] = useState([]);
+  const [attendanceOut, setAttendanceOut] = useState([]);
 
   useEffect(() => {
     loadDashboardData();
+    setupMQTTListeners();
+    
+    return () => {
+      // Cleanup MQTT listeners
+      mqttService.unsubscribe("attendance/update");
+      mqttService.unsubscribe("alarms/update");
+      mqttService.unsubscribe("doorlock/status");
+    };
   }, []);
+
+  const setupMQTTListeners = () => {
+    mqttService.connect().then(() => {
+      // Listen for real-time attendance updates
+      mqttService.subscribe("attendance/update", (message) => {
+        console.log("Real-time attendance update:", message);
+        loadDashboardData(); // Auto-refresh data
+      });
+
+      // Listen for real-time alarm updates
+      mqttService.subscribe("alarms/update", (message) => {
+        console.log("Real-time alarm update:", message);
+        loadDashboardData(); // Auto-refresh data
+      });
+
+      // Listen for doorlock status updates
+      mqttService.subscribe("doorlock/status", (message) => {
+        console.log("Doorlock status update:", message);
+        // You can update specific components here if needed
+      });
+    }).catch(err => {
+      console.error('MQTT connection failed:', err);
+    });
+  };
 
   const loadDashboardData = async () => {
     try {
@@ -83,7 +110,10 @@ export default function Dashboard() {
 
       if (usersResult.status === 'fulfilled') setUsers(usersResult.value);
       if (doorlockResult.status === 'fulfilled') setDoorlockUsers(doorlockResult.value);
-      if (attendanceResult.status === 'fulfilled') setAttendance(attendanceResult.value);
+      if (attendanceResult.status === 'fulfilled') {
+        setAttendance(attendanceResult.value);
+        processAttendanceData(attendanceResult.value);
+      }
       if (alarmsResult.status === 'fulfilled') setAlarms(alarmsResult.value);
       if (frequentAccessResult.status === 'fulfilled') setFrequentAccess(frequentAccessResult.frequent_access || []);
       if (longOpenDoorsResult.status === 'fulfilled') setLongOpenDoors(longOpenDoorsResult.long_open_doors || []);
@@ -110,45 +140,36 @@ export default function Dashboard() {
     }
   };
 
-  const handleDoorControl = async () => {
-    try {
-      setControlLoading(true);
-      const result = await controlDoorLock(doorControl.doorId, doorControl.command);
-      alert(`Door control successful: ${result.message}`);
-    } catch (err) {
-      alert(`Door control failed: ${err.message}`);
-    } finally {
-      setControlLoading(false);
-    }
+  const processAttendanceData = (attendanceData) => {
+    // Process data for IN and OUT charts
+    const inData = [];
+    const outData = [];
+    
+    // Group by date and count IN/OUT
+    const groupedData = {};
+    
+    attendanceData.forEach(record => {
+      const date = record.created_at.split('T')[0];
+      if (!groupedData[date]) {
+        groupedData[date] = { date, in: 0, out: 0 };
+      }
+      
+      if (record.arrow === 'in') {
+        groupedData[date].in++;
+      } else if (record.arrow === 'out') {
+        groupedData[date].out++;
+      }
+    });
+    
+    // Convert to arrays for charts
+    Object.values(groupedData).forEach(data => {
+      inData.push({ date: data.date, count: data.in });
+      outData.push({ date: data.date, count: data.out });
+    });
+    
+    setAttendanceIn(inData.slice(-7)); // Last 7 days
+    setAttendanceOut(outData.slice(-7)); // Last 7 days
   };
-
-  const handleBuzzerControl = async () => {
-    try {
-      setControlLoading(true);
-      const result = await controlBuzzer(
-        buzzerControl.buzzerId, 
-        buzzerControl.command, 
-        buzzerControl.duration
-      );
-      alert(`Buzzer control successful: ${result.message}`);
-    } catch (err) {
-      alert(`Buzzer control failed: ${err.message}`);
-    } finally {
-      setControlLoading(false);
-    }
-  };
-
-  // Data untuk chart frequent access
-  const frequentAccessChartData = frequentAccess.map(item => ({
-    name: item.username || item.access_id,
-    count: item.access_count
-  }));
-
-  // Data untuk chart long open doors
-  const longOpenDoorsChartData = longOpenDoors.map(item => ({
-    name: item.username || item.access_id,
-    duration: Math.round(item.avg_duration)
-  }));
 
   const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
 
@@ -170,13 +191,11 @@ export default function Dashboard() {
       {/* Header Section */}
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4">
         <h2 className="mb-3 mb-md-0">📊 Dashboard</h2>
-        <button
-          className="btn btn-outline-primary btn-sm"
-          onClick={loadDashboardData}
-          disabled={loading}
-        >
-          🔄 Refresh
-        </button>
+        <div className="d-flex align-items-center">
+          <span className="badge bg-success me-2">
+            {mqttService.isConnected ? '🟢 Connected' : '🔴 Disconnected'}
+          </span>
+        </div>
       </div>
 
       {error && (
@@ -203,14 +222,6 @@ export default function Dashboard() {
               onClick={() => setActiveTab('trends')}
             >
               🔍 Trend Analysis
-            </button>
-          </li>
-          <li className="nav-item">
-            <button 
-              className={`nav-link ${activeTab === 'control' ? 'active' : ''}`}
-              onClick={() => setActiveTab('control')}
-            >
-              🎮 Device Control
             </button>
           </li>
         </ul>
@@ -263,37 +274,70 @@ export default function Dashboard() {
           </div>
 
           {/* Chart Section */}
-          <div className="mt-4">
-            <div className="card shadow-sm">
-              <div className="card-header bg-white">
-                <h5 className="mb-0">📈 Door Access per Day (Last 7 Days)</h5>
+          <div className="row mt-4">
+            <div className="col-12 col-lg-6">
+              <div className="card shadow-sm">
+                <div className="card-header bg-white">
+                  <h5 className="mb-0">📈 Visitor In (Last 7 Days)</h5>
+                </div>
+                <div className="card-body" style={{ minHeight: "250px" }}>
+                  {attendanceIn.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={300}>
+                      <LineChart data={attendanceIn}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="count"
+                          stroke="#007bff"
+                          strokeWidth={3}
+                          dot={{ r: 3 }}
+                          name="Visitor In"
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="text-center py-5">
+                      <p className="text-muted">No visitor in data available.</p>
+                    </div>
+                  )}
+                </div>
               </div>
-              <div className="card-body" style={{ minHeight: "250px" }}>
-                {summary.length > 0 ? (
-                  <ResponsiveContainer width="100%" height={300}>
-                    <LineChart
-                      data={summary}
-                      margin={{ top: 20, right: 10, left: -15, bottom: 0 }}
-                    >
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <XAxis dataKey="date" tick={{ fontSize: 12 }} />
-                      <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
-                      <Tooltip />
-                      <Line
-                        type="monotone"
-                        dataKey="count"
-                        stroke="#007bff"
-                        strokeWidth={3}
-                        dot={{ r: 3 }}
-                        name="Access Count"
-                      />
-                    </LineChart>
-                  </ResponsiveContainer>
-                ) : (
-                  <div className="text-center py-5">
-                    <p className="text-muted">No access data available for the last 7 days.</p>
-                  </div>
-                )}
+            </div>
+
+            <div className="col-12 col-lg-6">
+              <div className="card shadow-sm">
+                <div className="card-header bg-white">
+                  <h5 className="mb-0">📈 Visitor Out (Last 7 Days)</h5>
+                </div>
+                <div className="card-body" style={{ minHeight: "250px" }}>
+                  {attendanceOut.length > 0 ? (
+                    <ResponsiveContainer width="100%" height={300}>
+                      <LineChart data={attendanceOut}>
+                        <CartesianGrid strokeDasharray="3 3" />
+                        <XAxis dataKey="date" tick={{ fontSize: 12 }} />
+                        <YAxis allowDecimals={false} tick={{ fontSize: 12 }} />
+                        <Tooltip />
+                        <Legend />
+                        <Line
+                          type="monotone"
+                          dataKey="count"
+                          stroke="#28a745"
+                          strokeWidth={3}
+                          dot={{ r: 3 }}
+                          name="Visitor Out"
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : (
+                    <div className="text-center py-5">
+                      <p className="text-muted">No visitor out data available.</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -314,12 +358,12 @@ export default function Dashboard() {
                 {frequentAccess.length > 0 ? (
                   <>
                     <ResponsiveContainer width="100%" height={250}>
-                      <BarChart data={frequentAccessChartData}>
+                      <BarChart data={frequentAccess}>
                         <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="name" />
+                        <XAxis dataKey="username" />
                         <YAxis />
                         <Tooltip />
-                        <Bar dataKey="count" fill="#ff4d4f" name="Access Count" />
+                        <Bar dataKey="access_count" fill="#ff4d4f" name="Access Count" />
                       </BarChart>
                     </ResponsiveContainer>
                     <div className="mt-3">
@@ -370,16 +414,16 @@ export default function Dashboard() {
                     <ResponsiveContainer width="100%" height={250}>
                       <PieChart>
                         <Pie
-                          data={longOpenDoorsChartData}
+                          data={longOpenDoors}
                           cx="50%"
                           cy="50%"
                           labelLine={false}
-                          label={({ name, duration }) => `${name}: ${duration}s`}
+                          label={({ username, avg_duration }) => `${username}: ${Math.round(avg_duration)}s`}
                           outerRadius={80}
                           fill="#8884d8"
-                          dataKey="duration"
+                          dataKey="avg_duration"
                         >
-                          {longOpenDoorsChartData.map((entry, index) => (
+                          {longOpenDoors.map((entry, index) => (
                             <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
                           ))}
                         </Pie>
@@ -423,176 +467,6 @@ export default function Dashboard() {
                     <p className="text-muted">No long open door incidents detected.</p>
                   </div>
                 )}
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Device Control Tab */}
-      {activeTab === 'control' && (
-        <div className="row mt-3 g-4">
-          {/* Door Lock Control */}
-          <div className="col-12 col-md-6">
-            <div className="card shadow-sm">
-              <div className="card-header bg-white">
-                <h5 className="mb-0">🔒 Door Lock Control</h5>
-              </div>
-              <div className="card-body">
-                <div className="mb-3">
-                  <label className="form-label">Door ID</label>
-                  <select 
-                    className="form-select"
-                    value={doorControl.doorId}
-                    onChange={(e) => setDoorControl({...doorControl, doorId: e.target.value})}
-                  >
-                    <option value="D01">Door D01</option>
-                    <option value="D02">Door D02</option>
-                    <option value="D03">Door D03</option>
-                  </select>
-                </div>
-                <div className="mb-3">
-                  <label className="form-label">Command</label>
-                  <select 
-                    className="form-select"
-                    value={doorControl.command}
-                    onChange={(e) => setDoorControl({...doorControl, command: e.target.value})}
-                  >
-                    <option value="lock">🔒 Lock</option>
-                    <option value="unlock">🔓 Unlock</option>
-                  </select>
-                </div>
-                <button
-                  className={`btn btn-${doorControl.command === 'lock' ? 'warning' : 'success'} w-100`}
-                  onClick={handleDoorControl}
-                  disabled={controlLoading}
-                >
-                  {controlLoading ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm me-2" />
-                      Sending...
-                    </>
-                  ) : (
-                    `${doorControl.command === 'lock' ? '🔒 Lock' : '🔓 Unlock'} Door ${doorControl.doorId}`
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Buzzer Control */}
-          <div className="col-12 col-md-6">
-            <div className="card shadow-sm">
-              <div className="card-header bg-white">
-                <h5 className="mb-0">🚨 Buzzer Control</h5>
-              </div>
-              <div className="card-body">
-                <div className="mb-3">
-                  <label className="form-label">Buzzer ID</label>
-                  <select 
-                    className="form-select"
-                    value={buzzerControl.buzzerId}
-                    onChange={(e) => setBuzzerControl({...buzzerControl, buzzerId: e.target.value})}
-                  >
-                    <option value="B01">Buzzer B01</option>
-                    <option value="B02">Buzzer B02</option>
-                  </select>
-                </div>
-                <div className="mb-3">
-                  <label className="form-label">Command</label>
-                  <select 
-                    className="form-select"
-                    value={buzzerControl.command}
-                    onChange={(e) => setBuzzerControl({...buzzerControl, command: e.target.value})}
-                  >
-                    <option value="on">🔊 Turn On</option>
-                    <option value="off">🔇 Turn Off</option>
-                  </select>
-                </div>
-                {buzzerControl.command === 'on' && (
-                  <div className="mb-3">
-                    <label className="form-label">Duration (seconds)</label>
-                    <input
-                      type="number"
-                      className="form-control"
-                      value={buzzerControl.duration}
-                      onChange={(e) => setBuzzerControl({...buzzerControl, duration: parseInt(e.target.value)})}
-                      min="1"
-                      max="60"
-                    />
-                  </div>
-                )}
-                <button
-                  className={`btn btn-${buzzerControl.command === 'on' ? 'danger' : 'secondary'} w-100`}
-                  onClick={handleBuzzerControl}
-                  disabled={controlLoading}
-                >
-                  {controlLoading ? (
-                    <>
-                      <span className="spinner-border spinner-border-sm me-2" />
-                      Sending...
-                    </>
-                  ) : (
-                    `${buzzerControl.command === 'on' ? '🔊 Turn On' : '🔇 Turn Off'} Buzzer ${buzzerControl.buzzerId}`
-                  )}
-                </button>
-              </div>
-            </div>
-          </div>
-
-          {/* Quick Actions */}
-          <div className="col-12">
-            <div className="card shadow-sm">
-              <div className="card-header bg-white">
-                <h5 className="mb-0">⚡ Quick Actions</h5>
-              </div>
-              <div className="card-body">
-                <div className="row g-2">
-                  <div className="col-6 col-md-3">
-                    <button
-                      className="btn btn-outline-success w-100"
-                      onClick={() => {
-                        setDoorControl({doorId: 'D01', command: 'unlock'});
-                        setTimeout(handleDoorControl, 100);
-                      }}
-                    >
-                      🔓 Unlock D01
-                    </button>
-                  </div>
-                  <div className="col-6 col-md-3">
-                    <button
-                      className="btn btn-outline-warning w-100"
-                      onClick={() => {
-                        setDoorControl({doorId: 'D01', command: 'lock'});
-                        setTimeout(handleDoorControl, 100);
-                      }}
-                    >
-                      🔒 Lock D01
-                    </button>
-                  </div>
-                  <div className="col-6 col-md-3">
-                    <button
-                      className="btn btn-outline-danger w-100"
-                      onClick={() => {
-                        setBuzzerControl({buzzerId: 'B01', command: 'on', duration: 10});
-                        setTimeout(handleBuzzerControl, 100);
-                      }}
-                    >
-                      🔊 Alarm 10s
-                    </button>
-                  </div>
-                  <div className="col-6 col-md-3">
-                    <button
-                      className="btn btn-outline-secondary w-100"
-                      onClick={() => {
-                        setBuzzerControl({buzzerId: 'B01', command: 'off', duration: 0});
-                        setTimeout(handleBuzzerControl, 100);
-                      }}
-                    >
-                      🔇 Stop Alarm
-                    </button>
-                  </div>
-                </div>
               </div>
             </div>
           </div>

@@ -5,24 +5,10 @@ services:
     image: eclipse-mosquitto:latest
     container_name: doorlock-mosquitto
     ports:
-      - "1883:1883"
-      - "9001:9001"
+      - "1883:1883"      # MQTT protocol
+      - "9001:9001"      # MQTT WebSocket
     volumes:
       - ./mosquitto/config/mosquitto.conf:/mosquitto/config/mosquitto.conf
-    networks:
-      - doorlock-network
-
-  backend:
-    build: ./backend
-    container_name: doorlock-backend
-    ports:
-      - "8090:8090"
-    environment:
-      - MQTT_BROKER=tcp://mosquitto:1883
-    volumes:
-      - ./backend/data.db:/app/data.db
-    depends_on:
-      - mosquitto
     networks:
       - doorlock-network
 

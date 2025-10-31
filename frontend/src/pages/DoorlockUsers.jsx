@@ -1,9 +1,10 @@
 import { useEffect, useState } from "react";
 import { apiGet, apiPost, apiDelete } from "../services/api";
+import { mqttService } from "../services/api";
 
 export default function DoorlockUsers() {
   const [users, setUsers] = useState([]);
-  const [form, setForm] = useState({ name: "", access_id: "", door_id: "" });
+  const [form, setForm] = useState({ name: "", access_id: "", door_id: "", pin: "" });
   const [loading, setLoading] = useState(false);
 
   const loadUsers = async () => {
@@ -18,23 +19,54 @@ export default function DoorlockUsers() {
 
   useEffect(() => {
     loadUsers();
+    
+    // Initialize MQTT connection
+    mqttService.connect().catch(err => {
+      console.error('MQTT connection failed:', err);
+    });
   }, []);
 
   const handleCreate = async (e) => {
     e.preventDefault();
-    if (!form.name || !form.access_id || !form.door_id) {
-      alert("Please fill all fields!");
+    if (!form.name || !form.access_id || !form.door_id || !form.pin) {
+      alert("Please fill all fields including PIN!");
+      return;
+    }
+
+    if (form.pin.length !== 6 || !/^\d+$/.test(form.pin)) {
+      alert("PIN must be exactly 6 digits!");
       return;
     }
 
     setLoading(true);
     try {
+      // Create user in database
       await apiPost("/doorlock/users", form);
-      setForm({ name: "", access_id: "", door_id: "" });
+      
+      // Trigger MQTT sync to doorlock device
+      const syncMessage = {
+        type: "user_sync",
+        access_id: form.access_id,
+        name: form.name,
+        pin: form.pin,
+        door_id: form.door_id,
+        timestamp: new Date().toISOString()
+      };
+      
+      const syncSuccess = mqttService.publish("doorlock/sync/users", JSON.stringify(syncMessage));
+      
+      if (syncSuccess) {
+        console.log("User sync triggered via MQTT");
+      } else {
+        console.warn("User created but MQTT sync failed");
+      }
+      
+      setForm({ name: "", access_id: "", door_id: "", pin: "" });
       await loadUsers();
+      alert("User created successfully and sync triggered!");
     } catch (err) {
       console.error("Failed to create doorlock user:", err);
-      alert("Failed to create user!");
+      alert("Failed to create user: " + err.message);
     } finally {
       setLoading(false);
     }
@@ -44,8 +76,19 @@ export default function DoorlockUsers() {
     if (!window.confirm("Are you sure you want to delete this user?")) return;
     setLoading(true);
     try {
-      await apiDelete(`/doorlock/users/${accessId}`);  // ✅ correct param
+      await apiDelete(`/doorlock/users/${accessId}`);
+      
+      // Trigger MQTT sync for user deletion
+      const deleteMessage = {
+        type: "user_delete",
+        access_id: accessId,
+        timestamp: new Date().toISOString()
+      };
+      
+      mqttService.publish("doorlock/sync/users", JSON.stringify(deleteMessage));
+      
       await loadUsers();
+      alert("User deleted successfully!");
     } catch (err) {
       console.error("Failed to delete doorlock user:", err);
       alert(`Failed to delete user: ${err.message}`);
@@ -53,7 +96,6 @@ export default function DoorlockUsers() {
       setLoading(false);
     }
   };
-
 
   return (
     <div className="container py-4">
@@ -67,24 +109,40 @@ export default function DoorlockUsers() {
             placeholder="Name"
             value={form.name}
             onChange={(e) => setForm({ ...form, name: e.target.value })}
+            required
           />
         </div>
-        <div className="col-md-3">
+        <div className="col-md-2">
           <input
             type="text"
             className="form-control"
             placeholder="Access ID"
             value={form.access_id}
             onChange={(e) => setForm({ ...form, access_id: e.target.value })}
+            required
           />
         </div>
-        <div className="col-md-3">
+        <div className="col-md-2">
           <input
             type="text"
             className="form-control"
             placeholder="Door ID"
             value={form.door_id}
             onChange={(e) => setForm({ ...form, door_id: e.target.value })}
+            required
+          />
+        </div>
+        <div className="col-md-2">
+          <input
+            type="text"
+            className="form-control"
+            placeholder="6-digit PIN"
+            value={form.pin}
+            onChange={(e) => setForm({ ...form, pin: e.target.value })}
+            maxLength={6}
+            pattern="\d{6}"
+            title="PIN must be exactly 6 digits"
+            required
           />
         </div>
         <div className="col-md-3">
@@ -93,7 +151,7 @@ export default function DoorlockUsers() {
             className="btn btn-success w-100"
             disabled={loading}
           >
-            {loading ? "Saving..." : "Add User"}
+            {loading ? "Saving & Syncing..." : "Add User & Sync"}
           </button>
         </div>
       </form>
@@ -106,6 +164,7 @@ export default function DoorlockUsers() {
               <th>Name</th>
               <th>Access ID</th>
               <th>Door ID</th>
+              <th>PIN</th>
               <th>Status</th>
               <th>Actions</th>
             </tr>
@@ -113,7 +172,7 @@ export default function DoorlockUsers() {
           <tbody>
             {users.length === 0 ? (
               <tr>
-                <td colSpan="6" className="text-center text-muted">
+                <td colSpan="7" className="text-center text-muted">
                   No doorlock users found
                 </td>
               </tr>
@@ -124,7 +183,12 @@ export default function DoorlockUsers() {
                   <td>{u.name}</td>
                   <td>{u.access_id}</td>
                   <td>{u.door_id}</td>
-                  <td>{u.is_active ? "Active" : "Inactive"}</td>
+                  <td>{u.pin}</td>
+                  <td>
+                    <span className={`badge ${u.is_active ? 'bg-success' : 'bg-danger'}`}>
+                      {u.is_active ? "Active" : "Inactive"}
+                    </span>
+                  </td>
                   <td>
                     <button
                       className="btn btn-sm btn-danger"

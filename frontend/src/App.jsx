@@ -10,6 +10,7 @@ import DoorlockUsers from "./pages/DoorlockUsers";
 
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap/dist/js/bootstrap.bundle.min.js'; 
+import DoorLockStatus from "./pages/DoorLockStatus";
 
 
 export default function App() {
@@ -49,6 +50,11 @@ export default function App() {
                 <li className="nav-item">
                   <Link className="nav-link" to="/doorlock-users">Doorlock Users</Link>
                 </li>
+                <li className="nav-item">
+                  <Link className="nav-link" to="/door-status">
+                    🚪 Door Status
+                  </Link>
+                </li>
               </ul>
               <button onClick={doLogout} className="btn btn-outline-light">
                 Logout
@@ -72,6 +78,11 @@ export default function App() {
         <Route path="/alarms" element={<ProtectedRoute><Alarms /></ProtectedRoute>} />
 
         <Route path="/doorlock-users" element={<ProtectedRoute><DoorlockUsers /></ProtectedRoute>}/>
+        <Route path="/door-status" element={
+          <ProtectedRoute>
+            <DoorLockStatus />
+          </ProtectedRoute>
+        } />
 
         {/* Catch-all */}
         <Route path="*" element={<h2 className="p-4">Page not found</h2>} />

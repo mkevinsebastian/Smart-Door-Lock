@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:8090/api"; // Pastikan port sesuai backend
+const API_BASE = "http://localhost:8090/api";
 
 export function getToken() {
   return localStorage.getItem("token");
@@ -63,14 +63,109 @@ export async function apiDelete(path, auth = true) {
   return handleResponse(res);
 }
 
-export async function login(username, password) {
-  const res = await apiPost("/login", { username, password }, false);
-  if (res.token) {
-    localStorage.setItem("token", res.token);
-    localStorage.setItem("username", res.username);
-    localStorage.setItem("role", res.role);
+// ====== ENCRYPTION FUNCTIONS ======
+// Simple encryption using Base64 (matching backend expectation)
+async function encryptData(data) {
+  try {
+    // Convert data to JSON string and Base64 encode
+    const jsonString = JSON.stringify(data);
+    const encrypted = btoa(unescape(encodeURIComponent(jsonString)));
+    return encrypted;
+  } catch (error) {
+    console.error('Encryption error:', error);
+    throw new Error('Failed to encrypt login data');
   }
-  return res;
+}
+
+async function decryptData(encryptedData) {
+  try {
+    // Base64 decode and parse JSON
+    const jsonString = decodeURIComponent(escape(atob(encryptedData)));
+    return JSON.parse(jsonString);
+  } catch (error) {
+    console.error('Decryption error:', error);
+    throw new Error('Failed to decrypt response data');
+  }
+}
+
+// Enhanced login function with encryption support
+export async function login(username, password) {
+  try {
+    // Prepare login data
+    const loginData = { username, password };
+    
+    // Encrypt the data
+    const encryptedData = await encryptData(loginData);
+    
+    // Send encrypted request
+    const response = await fetch(`${API_BASE}/login`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ data: encryptedData }),
+    });
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      throw new Error(errorText || `HTTP ${response.status}`);
+    }
+
+    const result = await response.json();
+    
+    // Handle encrypted response
+    if (result.data) {
+      // Backend mengirim response encrypted
+      const decryptedData = await decryptData(result.data);
+      
+      if (decryptedData.token) {
+        localStorage.setItem("token", decryptedData.token);
+        localStorage.setItem("username", decryptedData.username);
+        localStorage.setItem("role", decryptedData.role);
+        return decryptedData;
+      } else if (decryptedData.error) {
+        throw new Error(decryptedData.error);
+      }
+    } 
+    // Handle direct response (fallback)
+    else if (result.token) {
+      localStorage.setItem("token", result.token);
+      localStorage.setItem("username", result.username);
+      localStorage.setItem("role", result.role);
+      return result;
+    }
+    
+    throw new Error("Invalid response format from server");
+    
+  } catch (error) {
+    console.error("Login error:", error);
+    
+    // Fallback: try simple login endpoint
+    try {
+      console.log("Trying fallback to simple login...");
+      const fallbackResponse = await fetch(`${API_BASE}/login-simple`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ username, password }),
+      });
+
+      if (fallbackResponse.ok) {
+        const data = await fallbackResponse.json();
+        if (data.token) {
+          localStorage.setItem("token", data.token);
+          localStorage.setItem("username", data.username);
+          localStorage.setItem("role", data.role);
+          return data;
+        }
+      }
+    } catch (fallbackError) {
+      console.error("Fallback login also failed:", fallbackError);
+    }
+    
+    throw error;
+  }
 }
 
 export function logout() {
@@ -97,17 +192,9 @@ export async function getAttendance() {
   return apiGet("/attendance");
 }
 
-export async function createAttendance(accessId) {
-  return apiPost("/attendance", { access_id: accessId });
-}
-
 // Alarms API
 export async function getAlarms() {
   return apiGet("/alarms");
-}
-
-export async function createAlarm(alarmData) {
-  return apiPost("/alarm", alarmData);
 }
 
 export async function getSystemUsers() {
@@ -217,3 +304,128 @@ export async function getDashboardStats() {
     throw error;
   }
 }
+
+// ====== NEW MQTT SERVICE ======
+class MQTTService {
+  constructor() {
+    this.client = null;
+    this.isConnected = false;
+    this.messageCallbacks = new Map();
+    this.reconnectAttempts = 0;
+    this.maxReconnectAttempts = 5;
+  }
+
+  connect() {
+    return new Promise((resolve, reject) => {
+      if (this.isConnected) {
+        resolve();
+        return;
+      }
+
+      try {
+        // WebSocket connection to MQTT broker
+        const wsUrl = `ws://localhost:9001/mqtt`;
+        this.client = new WebSocket(wsUrl);
+        
+        this.client.onopen = () => {
+          console.log('✅ MQTT Connected');
+          this.isConnected = true;
+          this.reconnectAttempts = 0;
+          resolve();
+        };
+
+        this.client.onmessage = (event) => {
+          try {
+            const message = JSON.parse(event.data);
+            this.handleMessage(message);
+          } catch (error) {
+            console.error('Error parsing MQTT message:', error);
+          }
+        };
+
+        this.client.onclose = () => {
+          console.log('❌ MQTT Disconnected');
+          this.isConnected = false;
+          this.handleReconnect();
+        };
+
+        this.client.onerror = (error) => {
+          console.error('MQTT Connection Error:', error);
+          reject(error);
+        };
+
+      } catch (error) {
+        console.error('MQTT Connection Failed:', error);
+        reject(error);
+      }
+    });
+  }
+
+  handleReconnect() {
+    if (this.reconnectAttempts < this.maxReconnectAttempts) {
+      this.reconnectAttempts++;
+      console.log(`Attempting to reconnect MQTT... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+      setTimeout(() => this.connect(), 3000);
+    }
+  }
+
+  subscribe(topic, callback) {
+    if (!this.messageCallbacks.has(topic)) {
+      this.messageCallbacks.set(topic, []);
+    }
+    this.messageCallbacks.get(topic).push(callback);
+  }
+
+  unsubscribe(topic, callback) {
+    if (this.messageCallbacks.has(topic)) {
+      const callbacks = this.messageCallbacks.get(topic);
+      const index = callbacks.indexOf(callback);
+      if (index > -1) {
+        callbacks.splice(index, 1);
+      }
+    }
+  }
+
+  handleMessage(message) {
+    const { topic, payload } = message;
+    
+    if (this.messageCallbacks.has(topic)) {
+      const callbacks = this.messageCallbacks.get(topic);
+      callbacks.forEach(callback => {
+        try {
+          callback(payload);
+        } catch (error) {
+          console.error('Error in MQTT callback:', error);
+        }
+      });
+    }
+  }
+
+  publish(topic, message) {
+    if (!this.isConnected || !this.client) {
+      console.error('MQTT not connected');
+      return false;
+    }
+
+    try {
+      const mqttMessage = {
+        topic: topic,
+        payload: message
+      };
+      this.client.send(JSON.stringify(mqttMessage));
+      return true;
+    } catch (error) {
+      console.error('Error publishing MQTT message:', error);
+      return false;
+    }
+  }
+
+  disconnect() {
+    if (this.client) {
+      this.client.close();
+      this.isConnected = false;
+    }
+  }
+}
+
+export const mqttService = new MQTTService();
