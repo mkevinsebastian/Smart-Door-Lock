@@ -3,92 +3,101 @@ import { controlDoorLock, controlBuzzer, mqttService } from "../services/api";
 
 export default function DoorLockStatus() {
   const [doorStatus, setDoorStatus] = useState({
-    door: 'closed', // 'open' or 'closed'
-    reader: 'connected', // 'connected' or 'disconnected'
-    pinpad: 'connected' // 'connected' or 'disconnected'
+    door: 'closed',
+    reader: 'connected', 
+    pinpad: 'connected'
   });
   const [buzzerState, setBuzzerState] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState(false);
 
   useEffect(() => {
-    // Initialize MQTT connection and listeners
-    mqttService.connect().then(() => {
-      // Listen for door status updates
-      mqttService.subscribe("doorlock/status/door", (message) => {
-        try {
-          const status = JSON.parse(message);
-          setDoorStatus(prev => ({
-            ...prev,
-            door: status.state
-          }));
-        } catch (error) {
-          console.error('Error parsing door status:', error);
-        }
-      });
+    const initializeMQTT = async () => {
+      try {
+        await mqttService.connect();
+        setConnectionStatus(true);
+        
+        // Subscribe to status topics
+        mqttService.subscribe("doorlock/status/door", (message) => {
+          try {
+            const data = typeof message === 'string' ? JSON.parse(message) : message;
+            console.log('🚪 Door status:', data);
+            setDoorStatus(prev => ({ ...prev, door: data.state || data.status || 'closed' }));
+          } catch (error) {
+            console.error('Error parsing door status:', error);
+          }
+        });
 
-      // Listen for reader status updates
-      mqttService.subscribe("doorlock/status/reader", (message) => {
-        try {
-          const status = JSON.parse(message);
-          setDoorStatus(prev => ({
-            ...prev,
-            reader: status.state
-          }));
-        } catch (error) {
-          console.error('Error parsing reader status:', error);
-        }
-      });
+        mqttService.subscribe("doorlock/status/reader", (message) => {
+          try {
+            const data = typeof message === 'string' ? JSON.parse(message) : message;
+            console.log('📋 Reader status:', data);
+            setDoorStatus(prev => ({ ...prev, reader: data.state || data.status || 'disconnected' }));
+          } catch (error) {
+            console.error('Error parsing reader status:', error);
+          }
+        });
 
-      // Listen for pinpad status updates
-      mqttService.subscribe("doorlock/status/pinpad", (message) => {
-        try {
-          const status = JSON.parse(message);
-          setDoorStatus(prev => ({
-            ...prev,
-            pinpad: status.state
-          }));
-        } catch (error) {
-          console.error('Error parsing pinpad status:', error);
-        }
-      });
+        mqttService.subscribe("doorlock/status/pinpad", (message) => {
+          try {
+            const data = typeof message === 'string' ? JSON.parse(message) : message;
+            console.log('⌨️ Pinpad status:', data);
+            setDoorStatus(prev => ({ ...prev, pinpad: data.state || data.status || 'disconnected' }));
+          } catch (error) {
+            console.error('Error parsing pinpad status:', error);
+          }
+        });
 
-      // Listen for buzzer status updates
-      mqttService.subscribe("buzzer/status", (message) => {
-        try {
-          const status = JSON.parse(message);
-          setBuzzerState(status.state === 'on');
-        } catch (error) {
-          console.error('Error parsing buzzer status:', error);
-        }
-      });
+        mqttService.subscribe("buzzer/status", (message) => {
+          try {
+            const data = typeof message === 'string' ? JSON.parse(message) : message;
+            console.log('🔊 Buzzer status:', data);
+            setBuzzerState(data.state === 'on' || data.status === 'on');
+          } catch (error) {
+            console.error('Error parsing buzzer status:', error);
+          }
+        });
 
-    }).catch(err => {
-      console.error('MQTT connection failed:', err);
-    });
+        // Subscribe to all status messages for debugging
+        mqttService.subscribe("doorlock/status/#", (message) => {
+          console.log('🔍 All status message:', message);
+        });
 
+      } catch (error) {
+        console.error('Failed to initialize MQTT:', error);
+        setConnectionStatus(false);
+      }
+    };
+
+    initializeMQTT();
+
+    // Cleanup
     return () => {
-      // Cleanup MQTT listeners
       mqttService.unsubscribe("doorlock/status/door");
       mqttService.unsubscribe("doorlock/status/reader");
       mqttService.unsubscribe("doorlock/status/pinpad");
       mqttService.unsubscribe("buzzer/status");
+      mqttService.unsubscribe("doorlock/status/#");
     };
   }, []);
 
   const handleOpenDoor = async () => {
     try {
       setLoading(true);
+      
+      // Send via HTTP API (fallback)
       await controlDoorLock('D01', 'unlock');
       
-      // Also publish MQTT message for real-time control
-      mqttService.publish("doorlock/D01/control", JSON.stringify({
+      // Also send via MQTT for real-time
+      const success = mqttService.publish("doorlock/D01/control", JSON.stringify({
         command: 'unlock',
         timestamp: new Date().toISOString()
       }));
       
-      alert('Door unlock command sent!');
+      alert(success ? '🚪 Door unlock command sent!' : '⚠️ Command sent via HTTP (MQTT failed)');
+      
     } catch (error) {
-      alert(`Failed to open door: ${error.message}`);
+      alert(`❌ Failed to open door: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -99,21 +108,26 @@ export default function DoorLockStatus() {
       setLoading(true);
       const newBuzzerState = !buzzerState;
       const command = newBuzzerState ? 'on' : 'off';
-      const duration = newBuzzerState ? 10 : 0;
       
-      await controlBuzzer('B01', command, duration);
+      // Send via HTTP API (fallback)
+      await controlBuzzer('B01', command, newBuzzerState ? 10 : 0);
       
-      // Also publish MQTT message for real-time control
-      mqttService.publish("buzzer/B01/control", JSON.stringify({
+      // Also send via MQTT for real-time
+      const success = mqttService.publish("buzzer/B01/control", JSON.stringify({
         command: command,
-        duration: duration,
+        duration: newBuzzerState ? 10 : 0,
         timestamp: new Date().toISOString()
       }));
       
-      setBuzzerState(newBuzzerState);
-      alert(`Buzzer ${command} command sent!`);
+      if (success) {
+        setBuzzerState(newBuzzerState);
+        alert(`🔊 Buzzer ${command} command sent!`);
+      } else {
+        alert(`⚠️ Buzzer command sent via HTTP (MQTT failed)`);
+      }
+      
     } catch (error) {
-      alert(`Failed to control buzzer: ${error.message}`);
+      alert(`❌ Failed to control buzzer: ${error.message}`);
     } finally {
       setLoading(false);
     }
@@ -137,6 +151,20 @@ export default function DoorLockStatus() {
     <div className="container py-4">
       <h2>🚪 Door Lock Status & Control</h2>
       
+      {/* Connection Status */}
+      <div className="row mb-4">
+        <div className="col-12">
+          <div className={`alert ${connectionStatus ? 'alert-success' : 'alert-warning'}`}>
+            <strong>MQTT Status:</strong> {connectionStatus ? '🟢 CONNECTED' : '🟡 CONNECTING...'}
+            {!connectionStatus && (
+              <div>
+                <small>Make sure Mosquitto MQTT is running on port 9001</small>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+
       {/* Status Indicators */}
       <div className="row mt-4">
         <div className="col-md-4">
@@ -233,20 +261,22 @@ export default function DoorLockStatus() {
         </div>
       </div>
 
-      {/* Connection Status */}
+      {/* Debug Info */}
       <div className="row mt-4">
         <div className="col-12">
-          <div className="card shadow-sm">
+          <div className="card">
+            <div className="card-header">
+              <h6>Debug Information</h6>
+            </div>
             <div className="card-body">
-              <div className="d-flex justify-content-between align-items-center">
-                <div>
-                  <h6 className="mb-1">MQTT Connection</h6>
-                  <small className="text-muted">Real-time communication status</small>
-                </div>
-                <span className={`badge ${mqttService.isConnected ? 'bg-success' : 'bg-danger'}`}>
-                  {mqttService.isConnected ? '🟢 CONNECTED' : '🔴 DISCONNECTED'}
-                </span>
-              </div>
+              <pre className="mb-0">
+                {JSON.stringify({
+                  connectionStatus,
+                  doorStatus,
+                  buzzerState,
+                  loading
+                }, null, 2)}
+              </pre>
             </div>
           </div>
         </div>

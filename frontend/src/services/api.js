@@ -64,10 +64,8 @@ export async function apiDelete(path, auth = true) {
 }
 
 // ====== ENCRYPTION FUNCTIONS ======
-// Simple encryption using Base64 (matching backend expectation)
 async function encryptData(data) {
   try {
-    // Convert data to JSON string and Base64 encode
     const jsonString = JSON.stringify(data);
     const encrypted = btoa(unescape(encodeURIComponent(jsonString)));
     return encrypted;
@@ -79,7 +77,6 @@ async function encryptData(data) {
 
 async function decryptData(encryptedData) {
   try {
-    // Base64 decode and parse JSON
     const jsonString = decodeURIComponent(escape(atob(encryptedData)));
     return JSON.parse(jsonString);
   } catch (error) {
@@ -88,16 +85,11 @@ async function decryptData(encryptedData) {
   }
 }
 
-// Enhanced login function with encryption support
 export async function login(username, password) {
   try {
-    // Prepare login data
     const loginData = { username, password };
-    
-    // Encrypt the data
     const encryptedData = await encryptData(loginData);
     
-    // Send encrypted request
     const response = await fetch(`${API_BASE}/login`, {
       method: "POST",
       headers: {
@@ -113,9 +105,7 @@ export async function login(username, password) {
 
     const result = await response.json();
     
-    // Handle encrypted response
     if (result.data) {
-      // Backend mengirim response encrypted
       const decryptedData = await decryptData(result.data);
       
       if (decryptedData.token) {
@@ -127,7 +117,6 @@ export async function login(username, password) {
         throw new Error(decryptedData.error);
       }
     } 
-    // Handle direct response (fallback)
     else if (result.token) {
       localStorage.setItem("token", result.token);
       localStorage.setItem("username", result.username);
@@ -140,7 +129,6 @@ export async function login(username, password) {
   } catch (error) {
     console.error("Login error:", error);
     
-    // Fallback: try simple login endpoint
     try {
       console.log("Trying fallback to simple login...");
       const fallbackResponse = await fetch(`${API_BASE}/login-simple`, {
@@ -305,14 +293,15 @@ export async function getDashboardStats() {
   }
 }
 
-// ====== NEW MQTT SERVICE ======
-class MQTTService {
+// ====== SIMPLE MQTT SERVICE (WebSocket Basic) ======
+class SimpleMQTTService {
   constructor() {
-    this.client = null;
+    this.ws = null;
     this.isConnected = false;
     this.messageCallbacks = new Map();
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
+    this.reconnectInterval = null;
   }
 
   connect() {
@@ -323,39 +312,49 @@ class MQTTService {
       }
 
       try {
-        // WebSocket connection to MQTT broker
-        const wsUrl = `ws://localhost:9001/mqtt`;
-        this.client = new WebSocket(wsUrl);
+        // WebSocket connection langsung ke MQTT WebSocket
+        this.ws = new WebSocket('ws://localhost:9001');
         
-        this.client.onopen = () => {
-          console.log('✅ MQTT Connected');
+        this.ws.onopen = () => {
+          console.log('✅ WebSocket MQTT Connected');
           this.isConnected = true;
           this.reconnectAttempts = 0;
           resolve();
         };
 
-        this.client.onmessage = (event) => {
+        this.ws.onmessage = (event) => {
           try {
+            // Parse message as JSON
             const message = JSON.parse(event.data);
-            this.handleMessage(message);
+            console.log('📨 MQTT Message:', message);
+            
+            // Handle different message formats
+            if (message.topic && message.payload) {
+              this.handleMessage(message.topic, message.payload);
+            } else if (message.destinationName && message.payloadString) {
+              this.handleMessage(message.destinationName, message.payloadString);
+            }
           } catch (error) {
-            console.error('Error parsing MQTT message:', error);
+            console.log('📨 Raw MQTT Message:', event.data);
+            // Try to handle as raw string
+            this.handleMessage('raw/data', event.data);
           }
         };
 
-        this.client.onclose = () => {
-          console.log('❌ MQTT Disconnected');
+        this.ws.onclose = () => {
+          console.log('❌ WebSocket MQTT Disconnected');
           this.isConnected = false;
           this.handleReconnect();
         };
 
-        this.client.onerror = (error) => {
-          console.error('MQTT Connection Error:', error);
+        this.ws.onerror = (error) => {
+          console.error('❌ WebSocket MQTT Error:', error);
+          this.isConnected = false;
           reject(error);
         };
 
       } catch (error) {
-        console.error('MQTT Connection Failed:', error);
+        console.error('WebSocket Connection Failed:', error);
         reject(error);
       }
     });
@@ -364,8 +363,16 @@ class MQTTService {
   handleReconnect() {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      console.log(`Attempting to reconnect MQTT... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
-      setTimeout(() => this.connect(), 3000);
+      console.log(`🔄 Attempting reconnect... (${this.reconnectAttempts}/${this.maxReconnectAttempts})`);
+      
+      clearTimeout(this.reconnectInterval);
+      this.reconnectInterval = setTimeout(() => {
+        this.connect().catch(err => {
+          console.error('Reconnection failed:', err);
+        });
+      }, 3000);
+    } else {
+      console.error('❌ Max reconnection attempts reached');
     }
   }
 
@@ -374,6 +381,7 @@ class MQTTService {
       this.messageCallbacks.set(topic, []);
     }
     this.messageCallbacks.get(topic).push(callback);
+    console.log(`✅ Subscribed to: ${topic}`);
   }
 
   unsubscribe(topic, callback) {
@@ -386,9 +394,7 @@ class MQTTService {
     }
   }
 
-  handleMessage(message) {
-    const { topic, payload } = message;
-    
+  handleMessage(topic, payload) {
     if (this.messageCallbacks.has(topic)) {
       const callbacks = this.messageCallbacks.get(topic);
       callbacks.forEach(callback => {
@@ -399,33 +405,76 @@ class MQTTService {
         }
       });
     }
+    
+    // Juga handle wildcard subscriptions
+    this.messageCallbacks.forEach((callbacks, subscribedTopic) => {
+      if (subscribedTopic.includes('+') || subscribedTopic.includes('#')) {
+        // Simple wildcard matching (basic)
+        if (this.topicMatches(subscribedTopic, topic)) {
+          callbacks.forEach(callback => {
+            try {
+              callback(payload);
+            } catch (error) {
+              console.error('Error in wildcard MQTT callback:', error);
+            }
+          });
+        }
+      }
+    });
+  }
+
+  topicMatches(subscribedTopic, actualTopic) {
+    // Basic wildcard matching
+    const subscribedParts = subscribedTopic.split('/');
+    const actualParts = actualTopic.split('/');
+    
+    if (subscribedParts.length !== actualParts.length && !subscribedTopic.includes('#')) {
+      return false;
+    }
+    
+    for (let i = 0; i < subscribedParts.length; i++) {
+      if (subscribedParts[i] === '#') return true;
+      if (subscribedParts[i] !== '+' && subscribedParts[i] !== actualParts[i]) {
+        return false;
+      }
+    }
+    
+    return true;
   }
 
   publish(topic, message) {
-    if (!this.isConnected || !this.client) {
-      console.error('MQTT not connected');
+    if (!this.isConnected || !this.ws) {
+      console.error('❌ MQTT not connected, cannot publish');
       return false;
     }
 
     try {
       const mqttMessage = {
         topic: topic,
-        payload: message
+        payload: typeof message === 'string' ? message : JSON.stringify(message)
       };
-      this.client.send(JSON.stringify(mqttMessage));
+      
+      this.ws.send(JSON.stringify(mqttMessage));
+      console.log(`📤 MQTT Message Published: ${topic}`, message);
       return true;
     } catch (error) {
-      console.error('Error publishing MQTT message:', error);
+      console.error('❌ Error publishing MQTT message:', error);
       return false;
     }
   }
 
   disconnect() {
-    if (this.client) {
-      this.client.close();
+    if (this.ws) {
+      this.ws.close();
       this.isConnected = false;
     }
+    clearTimeout(this.reconnectInterval);
+  }
+
+  getConnectionStatus() {
+    return this.isConnected && this.ws && this.ws.readyState === WebSocket.OPEN;
   }
 }
 
-export const mqttService = new MQTTService();
+// Export service
+export const mqttService = new SimpleMQTTService();
