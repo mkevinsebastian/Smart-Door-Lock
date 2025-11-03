@@ -478,3 +478,24 @@ class SimpleMQTTService {
 
 // Export service
 export const mqttService = new SimpleMQTTService();
+
+// ====== REAL-TIME MQTT TOPICS ======
+export const MQTT_TOPICS = {
+  ATTENDANCE_NEW: "attendance/new",
+  ATTENDANCE_ALL: "attendance/#",
+  ALARMS_NEW: "alarms/new", 
+  ALARMS_ALL: "alarms/#",
+  DOOR_STATUS: "doorlock/status/door",
+  DOOR_ALL: "doorlock/status/#",
+  USERS_ONLINE: "users/online",
+  SYSTEM_UPDATE: "system/update",
+  SYSTEM_REFRESH: "system/refresh"
+};
+
+// Function to publish real-time updates
+export const publishRealTimeUpdate = (topic, data) => {
+  return mqttService.publish(topic, JSON.stringify({
+    ...data,
+    timestamp: new Date().toISOString()
+  }));
+};

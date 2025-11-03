@@ -45,39 +45,169 @@ export default function Dashboard() {
   const [attendanceIn, setAttendanceIn] = useState([]);
   const [attendanceOut, setAttendanceOut] = useState([]);
 
+  // Real-time update states
+  const [lastUpdate, setLastUpdate] = useState(new Date());
+  const [realTimeData, setRealTimeData] = useState({
+    newAttendance: 0,
+    newAlarms: 0,
+    doorStatus: 'closed',
+    onlineUsers: 0,
+    recentActivities: []
+  });
+
   useEffect(() => {
     loadDashboardData();
     setupMQTTListeners();
     
     return () => {
       // Cleanup MQTT listeners
-      mqttService.unsubscribe("attendance/update");
-      mqttService.unsubscribe("alarms/update");
-      mqttService.unsubscribe("doorlock/status");
+      mqttService.unsubscribe("attendance/#");
+      mqttService.unsubscribe("alarms/#");
+      mqttService.unsubscribe("doorlock/status/#");
+      mqttService.unsubscribe("users/online");
+      mqttService.unsubscribe("system/update");
+      mqttService.unsubscribe("doorlock/access");
     };
   }, []);
 
   const setupMQTTListeners = () => {
     mqttService.connect().then(() => {
-      // Listen for real-time attendance updates
-      mqttService.subscribe("attendance/update", (message) => {
-        console.log("Real-time attendance update:", message);
-        loadDashboardData(); // Auto-refresh data
+      console.log('🔔 Dashboard MQTT listeners activated');
+
+      // ==================== ATTENDANCE REAL-TIME UPDATES ====================
+      mqttService.subscribe("attendance/new", (message) => {
+        console.log("📊 Real-time attendance update:", message);
+        setRealTimeData(prev => ({
+          ...prev,
+          newAttendance: prev.newAttendance + 1,
+          recentActivities: [
+            { type: 'attendance', message: 'New attendance record', timestamp: new Date() },
+            ...prev.recentActivities.slice(0, 9) // Keep last 10 activities
+          ]
+        }));
+        // Auto-refresh attendance data
+        setTimeout(() => loadAttendanceData(), 500);
       });
 
-      // Listen for real-time alarm updates
-      mqttService.subscribe("alarms/update", (message) => {
-        console.log("Real-time alarm update:", message);
-        loadDashboardData(); // Auto-refresh data
+      // Listen for door access events (from controller)
+      mqttService.subscribe("doorlock/access", (message) => {
+        console.log("🚪 Door access from controller:", message);
+        try {
+          const data = typeof message === 'string' ? JSON.parse(message) : message;
+          if (data.access_id && data.status === 'success') {
+            setRealTimeData(prev => ({
+              ...prev,
+              newAttendance: prev.newAttendance + 1,
+              recentActivities: [
+                { 
+                  type: 'access', 
+                  message: `Access: ${data.access_id}`, 
+                  timestamp: new Date(),
+                  user: data.username || 'Unknown'
+                },
+                ...prev.recentActivities.slice(0, 9)
+              ]
+            }));
+            setTimeout(() => loadAttendanceData(), 1000);
+          }
+        } catch (error) {
+          console.log('Raw door access message:', message);
+        }
       });
 
-      // Listen for doorlock status updates
-      mqttService.subscribe("doorlock/status", (message) => {
-        console.log("Doorlock status update:", message);
-        // You can update specific components here if needed
+      // Listen for all attendance topics
+      mqttService.subscribe("attendance/#", (message) => {
+        console.log("📈 Attendance topic update:", message);
+        setLastUpdate(new Date());
       });
+
+      // ==================== ALARMS REAL-TIME UPDATES ====================
+      mqttService.subscribe("alarms/new", (message) => {
+        console.log("🚨 Real-time alarm update:", message);
+        setRealTimeData(prev => ({
+          ...prev,
+          newAlarms: prev.newAlarms + 1,
+          recentActivities: [
+            { type: 'alarm', message: 'New alarm triggered', timestamp: new Date() },
+            ...prev.recentActivities.slice(0, 9)
+          ]
+        }));
+        // Auto-refresh alarms data
+        setTimeout(() => loadAlarmsData(), 500);
+      });
+
+      // Listen for doorlock alarm events (from controller)
+      mqttService.subscribe("doorlock/alarm", (message) => {
+        console.log("🔴 Doorlock alarm from controller:", message);
+        try {
+          const data = typeof message === 'string' ? JSON.parse(message) : message;
+          setRealTimeData(prev => ({
+            ...prev,
+            newAlarms: prev.newAlarms + 1,
+            recentActivities: [
+              { 
+                type: 'alarm', 
+                message: `Alarm: ${data.reason || 'Security alert'}`, 
+                timestamp: new Date(),
+                user: data.username || 'Unknown'
+              },
+              ...prev.recentActivities.slice(0, 9)
+            ]
+          }));
+          setTimeout(() => loadAlarmsData(), 1000);
+        } catch (error) {
+          console.log('Raw alarm message:', message);
+        }
+      });
+
+      // Listen for all alarm topics
+      mqttService.subscribe("alarms/#", (message) => {
+        console.log("⚠️ Alarm topic update:", message);
+        setLastUpdate(new Date());
+      });
+
+      // ==================== DOOR STATUS UPDATES ====================
+      mqttService.subscribe("doorlock/status/door", (message) => {
+        console.log("🚪 Real-time door status:", message);
+        try {
+          const data = typeof message === 'string' ? JSON.parse(message) : message;
+          setRealTimeData(prev => ({
+            ...prev,
+            doorStatus: data.state || data.status || 'closed'
+          }));
+        } catch {
+          if (typeof message === 'string') {
+            setRealTimeData(prev => ({
+              ...prev,
+              doorStatus: message.includes('open') ? 'open' : 'closed'
+            }));
+          }
+        }
+      });
+
+      // ==================== SYSTEM UPDATES ====================
+      mqttService.subscribe("users/online", (message) => {
+        console.log("👥 Real-time online users:", message);
+        try {
+          const data = typeof message === 'string' ? JSON.parse(message) : message;
+          setRealTimeData(prev => ({
+            ...prev,
+            onlineUsers: data.count || data.total || 0
+          }));
+        } catch {
+          // Ignore parse errors
+        }
+      });
+
+      mqttService.subscribe("system/update", (message) => {
+        console.log("🔄 System update received:", message);
+        setLastUpdate(new Date());
+        // Refresh all data when system update received
+        loadDashboardData();
+      });
+
     }).catch(err => {
-      console.error('MQTT connection failed:', err);
+      console.error('Dashboard MQTT connection failed:', err);
     });
   };
 
@@ -132,6 +262,8 @@ export default function Dashboard() {
         });
         setSummary(fallback);
       }
+
+      setLastUpdate(new Date());
     } catch (err) {
       console.error('Error in dashboard:', err);
       setError('Failed to load dashboard data');
@@ -140,12 +272,31 @@ export default function Dashboard() {
     }
   };
 
+  const loadAttendanceData = async () => {
+    try {
+      const attendanceData = await getAttendance();
+      setAttendance(attendanceData);
+      processAttendanceData(attendanceData);
+      setLastUpdate(new Date());
+    } catch (err) {
+      console.error('Error refreshing attendance:', err);
+    }
+  };
+
+  const loadAlarmsData = async () => {
+    try {
+      const alarmsData = await getAlarms();
+      setAlarms(alarmsData);
+      setLastUpdate(new Date());
+    } catch (err) {
+      console.error('Error refreshing alarms:', err);
+    }
+  };
+
   const processAttendanceData = (attendanceData) => {
-    // Process data for IN and OUT charts
     const inData = [];
     const outData = [];
     
-    // Group by date and count IN/OUT
     const groupedData = {};
     
     attendanceData.forEach(record => {
@@ -161,17 +312,32 @@ export default function Dashboard() {
       }
     });
     
-    // Convert to arrays for charts
     Object.values(groupedData).forEach(data => {
       inData.push({ date: data.date, count: data.in });
       outData.push({ date: data.date, count: data.out });
     });
     
-    setAttendanceIn(inData.slice(-7)); // Last 7 days
-    setAttendanceOut(outData.slice(-7)); // Last 7 days
+    setAttendanceIn(inData.slice(-7));
+    setAttendanceOut(outData.slice(-7));
   };
 
   const COLORS = ['#0088FE', '#00C49F', '#FFBB28', '#FF8042', '#8884D8'];
+
+  // Format time for display
+  const formatLastUpdate = (date) => {
+    return date.toLocaleTimeString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  };
+
+  const formatActivityTime = (date) => {
+    return date.toLocaleTimeString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit'
+    });
+  };
 
   if (loading) {
     return (
@@ -190,11 +356,25 @@ export default function Dashboard() {
     <div className="container py-4">
       {/* Header Section */}
       <div className="d-flex flex-column flex-md-row justify-content-between align-items-start align-items-md-center mb-4">
-        <h2 className="mb-3 mb-md-0">📊 Dashboard</h2>
-        <div className="d-flex align-items-center">
+        <div>
+          <h2 className="mb-1">📊 Dashboard</h2>
+          <small className="text-muted">
+            Last update: {formatLastUpdate(lastUpdate)}
+            {realTimeData.newAttendance > 0 && ` • ${realTimeData.newAttendance} new attendance`}
+            {realTimeData.newAlarms > 0 && ` • ${realTimeData.newAlarms} new alarms`}
+          </small>
+        </div>
+        <div className="d-flex align-items-center mt-2 mt-md-0">
           <span className="badge bg-success me-2">
             {mqttService.isConnected ? '🟢 Connected' : '🔴 Disconnected'}
           </span>
+          <button 
+            className="btn btn-sm btn-outline-primary"
+            onClick={loadDashboardData}
+            disabled={loading}
+          >
+            {loading ? 'Refreshing...' : 'Refresh'}
+          </button>
         </div>
       </div>
 
@@ -202,6 +382,42 @@ export default function Dashboard() {
         <div className="alert alert-warning alert-dismissible fade show" role="alert">
           {error}
           <button type="button" className="btn-close" onClick={() => setError('')}></button>
+        </div>
+      )}
+
+      {/* Real-time Notification Badges */}
+      {(realTimeData.newAttendance > 0 || realTimeData.newAlarms > 0) && (
+        <div className="row mb-3">
+          <div className="col-12">
+            <div className="alert alert-info d-flex justify-content-between align-items-center">
+              <div>
+                <strong>📡 Real-time Updates</strong>
+                {realTimeData.newAttendance > 0 && (
+                  <span className="badge bg-success ms-2">
+                    {realTimeData.newAttendance} new attendance
+                  </span>
+                )}
+                {realTimeData.newAlarms > 0 && (
+                  <span className="badge bg-danger ms-2">
+                    {realTimeData.newAlarms} new alarms
+                  </span>
+                )}
+              </div>
+              <button 
+                className="btn btn-sm btn-outline-info"
+                onClick={() => {
+                  setRealTimeData({
+                    ...realTimeData,
+                    newAttendance: 0,
+                    newAlarms: 0
+                  });
+                  loadDashboardData();
+                }}
+              >
+                Clear & Refresh
+              </button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -224,6 +440,14 @@ export default function Dashboard() {
               🔍 Trend Analysis
             </button>
           </li>
+          <li className="nav-item">
+            <button 
+              className={`nav-link ${activeTab === 'realtime' ? 'active' : ''}`}
+              onClick={() => setActiveTab('realtime')}
+            >
+              📡 Real-time Monitor
+            </button>
+          </li>
         </ul>
       </div>
 
@@ -238,6 +462,13 @@ export default function Dashboard() {
                   <h6 className="card-title text-primary">System Users</h6>
                   <p className="display-6 text-primary mb-0">{dashboardStats.total_users || users.length}</p>
                   <small className="text-muted">Total system accounts</small>
+                  {realTimeData.onlineUsers > 0 && (
+                    <div className="mt-1">
+                      <span className="badge bg-success">
+                        {realTimeData.onlineUsers} online
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -258,6 +489,13 @@ export default function Dashboard() {
                   <h6 className="card-title text-info">Today Access</h6>
                   <p className="display-6 text-info mb-0">{dashboardStats.today_attendance || '0'}</p>
                   <small className="text-muted">Access today</small>
+                  {realTimeData.newAttendance > 0 && (
+                    <div className="mt-1">
+                      <span className="badge bg-warning animate-pulse">
+                        +{realTimeData.newAttendance} new
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -268,6 +506,13 @@ export default function Dashboard() {
                   <h6 className="card-title text-warning">Active Alarms</h6>
                   <p className="display-6 text-warning mb-0">{dashboardStats.active_alarms || alarms.length}</p>
                   <small className="text-muted">Last 24 hours</small>
+                  {realTimeData.newAlarms > 0 && (
+                    <div className="mt-1">
+                      <span className="badge bg-danger animate-pulse">
+                        +{realTimeData.newAlarms} new
+                      </span>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
@@ -277,8 +522,9 @@ export default function Dashboard() {
           <div className="row mt-4">
             <div className="col-12 col-lg-6">
               <div className="card shadow-sm">
-                <div className="card-header bg-white">
+                <div className="card-header bg-white d-flex justify-content-between align-items-center">
                   <h5 className="mb-0">📈 Visitor In (Last 7 Days)</h5>
+                  <span className="badge bg-primary">Real-time</span>
                 </div>
                 <div className="card-body" style={{ minHeight: "250px" }}>
                   {attendanceIn.length > 0 ? (
@@ -310,8 +556,9 @@ export default function Dashboard() {
 
             <div className="col-12 col-lg-6">
               <div className="card shadow-sm">
-                <div className="card-header bg-white">
+                <div className="card-header bg-white d-flex justify-content-between align-items-center">
                   <h5 className="mb-0">📈 Visitor Out (Last 7 Days)</h5>
+                  <span className="badge bg-success">Real-time</span>
                 </div>
                 <div className="card-body" style={{ minHeight: "250px" }}>
                   {attendanceOut.length > 0 ? (
@@ -344,134 +591,141 @@ export default function Dashboard() {
         </>
       )}
 
-      {/* Trend Analysis Tab */}
-      {activeTab === 'trends' && (
+      {/* Real-time Monitor Tab */}
+      {activeTab === 'realtime' && (
         <div className="row mt-3 g-4">
-          {/* Frequent Access Analysis */}
-          <div className="col-12 col-lg-6">
-            <div className="card shadow-sm h-100">
+          <div className="col-12">
+            <div className="card shadow-sm">
               <div className="card-header bg-white">
-                <h5 className="mb-0">🚨 Frequent Access Alert</h5>
-                <small className="text-muted">Users with excessive door access in last 24 hours</small>
+                <h5 className="mb-0">📡 Real-time Activity Monitor</h5>
+                <small className="text-muted">Live updates from controllers via MQTT</small>
               </div>
               <div className="card-body">
-                {frequentAccess.length > 0 ? (
-                  <>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <BarChart data={frequentAccess}>
-                        <CartesianGrid strokeDasharray="3 3" />
-                        <XAxis dataKey="username" />
-                        <YAxis />
-                        <Tooltip />
-                        <Bar dataKey="access_count" fill="#ff4d4f" name="Access Count" />
-                      </BarChart>
-                    </ResponsiveContainer>
-                    <div className="mt-3">
-                      <h6>Details:</h6>
-                      <div className="table-responsive">
-                        <table className="table table-sm">
-                          <thead>
-                            <tr>
-                              <th>User</th>
-                              <th>Access ID</th>
-                              <th>Count</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {frequentAccess.map((item, index) => (
-                              <tr key={index}>
-                                <td>{item.username}</td>
-                                <td>{item.access_id}</td>
-                                <td>
-                                  <span className="badge bg-danger">{item.access_count}</span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                <div className="row">
+                  <div className="col-md-6">
+                    <h6>🔔 Activity Notifications</h6>
+                    <div className="list-group">
+                      <div className="list-group-item d-flex justify-content-between align-items-center">
+                        New Attendance Records
+                        <span className="badge bg-success rounded-pill">
+                          {realTimeData.newAttendance}
+                        </span>
+                      </div>
+                      <div className="list-group-item d-flex justify-content-between align-items-center">
+                        New Alarm Triggers
+                        <span className="badge bg-danger rounded-pill">
+                          {realTimeData.newAlarms}
+                        </span>
+                      </div>
+                      <div className="list-group-item d-flex justify-content-between align-items-center">
+                        Online Users
+                        <span className="badge bg-info rounded-pill">
+                          {realTimeData.onlineUsers}
+                        </span>
+                      </div>
+                      <div className="list-group-item d-flex justify-content-between align-items-center">
+                        Door Status
+                        <span className={`badge ${realTimeData.doorStatus === 'open' ? 'bg-warning' : 'bg-secondary'} rounded-pill`}>
+                          {realTimeData.doorStatus.toUpperCase()}
+                        </span>
                       </div>
                     </div>
-                  </>
-                ) : (
-                  <div className="text-center py-4">
-                    <p className="text-muted">No frequent access detected in the last 24 hours.</p>
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
 
-          {/* Long Open Doors Analysis */}
-          <div className="col-12 col-lg-6">
-            <div className="card shadow-sm h-100">
-              <div className="card-header bg-white">
-                <h5 className="mb-0">⏰ Long Open Doors</h5>
-                <small className="text-muted">Doors left open longer than 60 seconds</small>
-              </div>
-              <div className="card-body">
-                {longOpenDoors.length > 0 ? (
-                  <>
-                    <ResponsiveContainer width="100%" height={250}>
-                      <PieChart>
-                        <Pie
-                          data={longOpenDoors}
-                          cx="50%"
-                          cy="50%"
-                          labelLine={false}
-                          label={({ username, avg_duration }) => `${username}: ${Math.round(avg_duration)}s`}
-                          outerRadius={80}
-                          fill="#8884d8"
-                          dataKey="avg_duration"
-                        >
-                          {longOpenDoors.map((entry, index) => (
-                            <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                          ))}
-                        </Pie>
-                        <Tooltip />
-                      </PieChart>
-                    </ResponsiveContainer>
-                    <div className="mt-3">
-                      <h6>Details:</h6>
-                      <div className="table-responsive">
-                        <table className="table table-sm">
-                          <thead>
-                            <tr>
-                              <th>Door</th>
-                              <th>User</th>
-                              <th>Avg Duration</th>
-                              <th>Occurrences</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            {longOpenDoors.map((item, index) => (
-                              <tr key={index}>
-                                <td>{item.door_id}</td>
-                                <td>{item.username}</td>
-                                <td>
-                                  <span className="badge bg-warning">
-                                    {Math.round(item.avg_duration)}s
-                                  </span>
-                                </td>
-                                <td>
-                                  <span className="badge bg-info">{item.occurrence_count}</span>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
+                    <h6 className="mt-4">📋 Recent Activities</h6>
+                    <div style={{ maxHeight: '200px', overflowY: 'auto' }}>
+                      {realTimeData.recentActivities.length === 0 ? (
+                        <p className="text-muted small">No recent activities</p>
+                      ) : (
+                        realTimeData.recentActivities.map((activity, index) => (
+                          <div key={index} className="border-bottom pb-2 mb-2">
+                            <div className="d-flex justify-content-between">
+                              <small>
+                                {activity.type === 'attendance' && '📊 '}
+                                {activity.type === 'alarm' && '🚨 '}
+                                {activity.type === 'access' && '🚪 '}
+                                {activity.message}
+                                {activity.user && ` (${activity.user})`}
+                              </small>
+                              <small className="text-muted">
+                                {formatActivityTime(activity.timestamp)}
+                              </small>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                  <div className="col-md-6">
+                    <h6>📊 System Status</h6>
+                    <div className="card bg-light">
+                      <div className="card-body">
+                        <p><strong>MQTT Connection:</strong> 
+                          <span className={`badge ms-2 ${mqttService.isConnected ? 'bg-success' : 'bg-danger'}`}>
+                            {mqttService.isConnected ? 'CONNECTED' : 'DISCONNECTED'}
+                          </span>
+                        </p>
+                        <p><strong>Last Update:</strong> {formatLastUpdate(lastUpdate)}</p>
+                        <p><strong>Total Data Loaded:</strong></p>
+                        <ul>
+                          <li>Users: {users.length}</li>
+                          <li>Attendance: {attendance.length} records</li>
+                          <li>Alarms: {alarms.length} records</li>
+                          <li>Doorlock Users: {doorlockUsers}</li>
+                        </ul>
+                        
+                        <h6 className="mt-3">📡 Subscribed Topics</h6>
+                        <div className="small">
+                          <code>attendance/new</code> - New attendance<br/>
+                          <code>doorlock/access</code> - Door access events<br/>
+                          <code>alarms/new</code> - New alarms<br/>
+                          <code>doorlock/alarm</code> - Doorlock alarms<br/>
+                          <code>system/update</code> - System updates
+                        </div>
                       </div>
                     </div>
-                  </>
-                ) : (
-                  <div className="text-center py-4">
-                    <p className="text-muted">No long open door incidents detected.</p>
                   </div>
-                )}
+                </div>
+                
+                <div className="mt-4">
+                  <h6>🔄 Quick Actions</h6>
+                  <div className="d-flex gap-2">
+                    <button 
+                      className="btn btn-outline-primary btn-sm"
+                      onClick={loadDashboardData}
+                    >
+                      Refresh All Data
+                    </button>
+                    <button 
+                      className="btn btn-outline-secondary btn-sm"
+                      onClick={() => {
+                        setRealTimeData({
+                          ...realTimeData,
+                          newAttendance: 0,
+                          newAlarms: 0,
+                          recentActivities: []
+                        });
+                      }}
+                    >
+                      Clear Counters
+                    </button>
+                  </div>
+                </div>
               </div>
             </div>
           </div>
         </div>
       )}
+
+      {/* Auto-refresh indicator */}
+      <div className="row mt-4">
+        <div className="col-12">
+          <div className="text-center">
+            <small className="text-muted">
+              🔄 Auto-refresh enabled • Listening to controller events via MQTT
+            </small>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
