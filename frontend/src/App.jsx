@@ -10,7 +10,8 @@ import DoorlockUsers from "./pages/DoorlockUsers";
 
 import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap/dist/js/bootstrap.bundle.min.js'; 
-import DoorLockStatus from "./pages/DoorLockStatus";
+import InternalMQTTTest from "./pages/MQTTTesting";
+import DoorLockStatus from "./pages/DoorlockStatus";
 
 
 export default function App() {
@@ -52,7 +53,12 @@ export default function App() {
                 </li>
                 <li className="nav-item">
                   <Link className="nav-link" to="/door-status">
-                    🚪 Door Status
+                    Door Status
+                  </Link>
+                </li>
+                <li className="nav-item">
+                  <Link className="nav-link" to="/mqtt-test">
+                    Test MQTT
                   </Link>
                 </li>
               </ul>
@@ -81,6 +87,12 @@ export default function App() {
         <Route path="/door-status" element={
           <ProtectedRoute>
             <DoorLockStatus />
+          </ProtectedRoute>
+        } />
+
+        <Route path="/mqtt-test" element={
+          <ProtectedRoute>
+            <InternalMQTTTest />
           </ProtectedRoute>
         } />
 

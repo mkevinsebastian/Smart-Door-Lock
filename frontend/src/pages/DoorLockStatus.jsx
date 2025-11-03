@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { controlDoorLock, controlBuzzer, mqttService } from "../services/api";
+import { controlDoorLock, controlBuzzer, mqttService, MQTT_TOPICS } from "../services/api";
 
 export default function DoorLockStatus() {
   const [doorStatus, setDoorStatus] = useState({
@@ -18,95 +18,80 @@ export default function DoorLockStatus() {
         await mqttService.connect();
         setConnectionStatus(true);
         
-        // Subscribe ke topic yang SESUAI dengan test client
-        mqttService.subscribe("doorlock/status/reader", (message) => {
+        console.log('🚪 DoorLockStatus MQTT listeners activated');
+
+        // Subscribe to reader status
+        mqttService.subscribe(MQTT_TOPICS.READER_STATUS, (message) => {
           console.log('📋 Reader status received:', message);
-          setMessages(prev => [...prev, `Reader: ${message}`]);
+          setMessages(prev => [...prev, {type: 'reader', message, timestamp: new Date()}]);
           
           try {
             const data = typeof message === 'string' ? JSON.parse(message) : message;
-            setDoorStatus(prev => ({ 
-              ...prev, 
-              reader: data.status || data.state || 'connected' 
-            }));
+            const status = data.status || data.state || message;
+            setDoorStatus(prev => ({ ...prev, reader: status }));
           } catch {
-            // Handle plain string message seperti "status: connected"
+            // Handle plain string
             if (typeof message === 'string') {
-              if (message.includes('connected')) {
-                setDoorStatus(prev => ({ ...prev, reader: 'connected' }));
-              } else if (message.includes('disconnected')) {
-                setDoorStatus(prev => ({ ...prev, reader: 'disconnected' }));
-              }
+              setDoorStatus(prev => ({ ...prev, reader: message }));
             }
           }
         });
 
-        // Subscribe ke topic door status jika ada
-        mqttService.subscribe("doorlock/status/door", (message) => {
+        // Subscribe to door status
+        mqttService.subscribe(MQTT_TOPICS.DOOR_STATUS, (message) => {
           console.log('🚪 Door status received:', message);
-          setMessages(prev => [...prev, `Door: ${message}`]);
+          setMessages(prev => [...prev, {type: 'door', message, timestamp: new Date()}]);
           
           try {
             const data = typeof message === 'string' ? JSON.parse(message) : message;
-            setDoorStatus(prev => ({ 
-              ...prev, 
-              door: data.status || data.state || 'closed' 
-            }));
+            const status = data.state || data.status || message;
+            setDoorStatus(prev => ({ ...prev, door: status }));
           } catch {
             if (typeof message === 'string') {
-              if (message.includes('open')) {
-                setDoorStatus(prev => ({ ...prev, door: 'open' }));
-              } else if (message.includes('closed')) {
-                setDoorStatus(prev => ({ ...prev, door: 'closed' }));
-              }
+              setDoorStatus(prev => ({ ...prev, door: message }));
             }
           }
         });
 
-        // Subscribe ke topic pinpad status jika ada
-        mqttService.subscribe("doorlock/status/pinpad", (message) => {
+        // Subscribe to pinpad status
+        mqttService.subscribe(MQTT_TOPICS.PINPAD_STATUS, (message) => {
           console.log('⌨️ Pinpad status received:', message);
-          setMessages(prev => [...prev, `Pinpad: ${message}`]);
+          setMessages(prev => [...prev, {type: 'pinpad', message, timestamp: new Date()}]);
           
           try {
             const data = typeof message === 'string' ? JSON.parse(message) : message;
-            setDoorStatus(prev => ({ 
-              ...prev, 
-              pinpad: data.status || data.state || 'disconnected' 
-            }));
+            const status = data.status || data.state || message;
+            setDoorStatus(prev => ({ ...prev, pinpad: status }));
           } catch {
             if (typeof message === 'string') {
-              if (message.includes('connected')) {
-                setDoorStatus(prev => ({ ...prev, pinpad: 'connected' }));
-              } else if (message.includes('disconnected')) {
-                setDoorStatus(prev => ({ ...prev, pinpad: 'disconnected' }));
-              }
+              setDoorStatus(prev => ({ ...prev, pinpad: message }));
             }
           }
         });
 
-        // Subscribe ke buzzer status
-        mqttService.subscribe("buzzer/status", (message) => {
+        // Subscribe to buzzer status
+        mqttService.subscribe(MQTT_TOPICS.BUZZER_STATUS, (message) => {
           console.log('🔊 Buzzer status received:', message);
-          setMessages(prev => [...prev, `Buzzer: ${message}`]);
+          setMessages(prev => [...prev, {type: 'buzzer', message, timestamp: new Date()}]);
           
           try {
             const data = typeof message === 'string' ? JSON.parse(message) : message;
-            setBuzzerState(data.status === 'on' || data.state === 'on');
+            const status = data.state || data.status || message;
+            setBuzzerState(status === 'on' || status === true);
           } catch {
             if (typeof message === 'string') {
-              setBuzzerState(message.includes('on'));
+              setBuzzerState(message === 'on');
             }
           }
         });
 
-        // Subscribe ke SEMUA topic untuk debugging
-        mqttService.subscribe("#", (message) => {
-          console.log('🔍 ALL MQTT Messages:', message);
+        // Subscribe to all status topics for debugging
+        mqttService.subscribe("doorlock/status/#", (message) => {
+          console.log('🔍 All doorlock status:', message);
         });
 
-      } catch {
-        console.error('Failed to initialize MQTT');
+      } catch (error) {
+        console.error('Failed to initialize MQTT:', error);
         setConnectionStatus(false);
       }
     };
@@ -115,11 +100,11 @@ export default function DoorLockStatus() {
 
     // Cleanup
     return () => {
-      mqttService.unsubscribe("doorlock/status/reader");
-      mqttService.unsubscribe("doorlock/status/door");
-      mqttService.unsubscribe("doorlock/status/pinpad");
-      mqttService.unsubscribe("buzzer/status");
-      mqttService.unsubscribe("#");
+      mqttService.unsubscribe(MQTT_TOPICS.READER_STATUS);
+      mqttService.unsubscribe(MQTT_TOPICS.DOOR_STATUS);
+      mqttService.unsubscribe(MQTT_TOPICS.PINPAD_STATUS);
+      mqttService.unsubscribe(MQTT_TOPICS.BUZZER_STATUS);
+      mqttService.unsubscribe("doorlock/status/#");
     };
   }, []);
 
@@ -127,18 +112,19 @@ export default function DoorLockStatus() {
     try {
       setLoading(true);
       
-      // Gunakan topic yang SESUAI: doorlock/D01/control (bukan doorlock/D1/control)
-      const success = mqttService.publish("doorlock/D01/control", JSON.stringify({
+      const message = {
         command: 'unlock',
         door_id: 'D01',
         timestamp: new Date().toISOString()
-      }));
+      };
+      
+      const success = mqttService.publish(MQTT_TOPICS.DOOR_CONTROL, message);
       
       if (success) {
         alert('🚪 Door unlock command sent to D01!');
-        setMessages(prev => [...prev, 'Sent: doorlock/D01/control unlock']);
+        setMessages(prev => [...prev, {type: 'sent', message: 'doorlock/D01/control unlock', timestamp: new Date()}]);
       } else {
-        // Fallback ke HTTP API
+        // Fallback to HTTP API
         await controlDoorLock('D01', 'unlock');
         alert('⚠️ Door command sent via HTTP (MQTT failed)');
       }
@@ -156,20 +142,21 @@ export default function DoorLockStatus() {
       const newBuzzerState = !buzzerState;
       const command = newBuzzerState ? 'on' : 'off';
       
-      // Gunakan topic yang SESUAI: buzzer/B01/control
-      const success = mqttService.publish("buzzer/B01/control", JSON.stringify({
+      const message = {
         command: command,
         buzzer_id: 'B01',
         duration: newBuzzerState ? 10 : 0,
         timestamp: new Date().toISOString()
-      }));
+      };
+      
+      const success = mqttService.publish(MQTT_TOPICS.BUZZER_CONTROL, message);
       
       if (success) {
         setBuzzerState(newBuzzerState);
         alert(`🔊 Buzzer ${command} command sent to B01!`);
-        setMessages(prev => [...prev, `Sent: buzzer/B01/control ${command}`]);
+        setMessages(prev => [...prev, {type: 'sent', message: `buzzer/B01/control ${command}`, timestamp: new Date()}]);
       } else {
-        // Fallback ke HTTP API
+        // Fallback to HTTP API
         await controlBuzzer('B01', command, newBuzzerState ? 10 : 0);
         alert(`⚠️ Buzzer command sent via HTTP (MQTT failed)`);
       }
@@ -199,6 +186,14 @@ export default function DoorLockStatus() {
     setMessages([]);
   };
 
+  const formatTime = (date) => {
+    return date.toLocaleTimeString('id-ID', {
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit'
+    });
+  };
+
   return (
     <div className="container py-4">
       <h2>🚪 Door Lock Status & Control</h2>
@@ -209,7 +204,7 @@ export default function DoorLockStatus() {
           <div className={`alert ${connectionStatus ? 'alert-success' : 'alert-warning'}`}>
             <strong>MQTT Status:</strong> {connectionStatus ? '🟢 CONNECTED' : '🟡 CONNECTING...'}
             <br />
-            <small>Subscribed to: doorlock/status/reader, doorlock/D01/control, buzzer/B01/control</small>
+            <small>Using Paho MQTT Library • Subscribed to all status topics</small>
           </div>
         </div>
       </div>
@@ -276,7 +271,7 @@ export default function DoorLockStatus() {
                 )}
               </button>
               <small className="text-muted mt-2 d-block">
-                Topic: doorlock/D01/control
+                Topic: {MQTT_TOPICS.DOOR_CONTROL}
               </small>
             </div>
           </div>
@@ -303,7 +298,7 @@ export default function DoorLockStatus() {
                 )}
               </button>
               <small className="text-muted mt-2 d-block">
-                Topic: buzzer/B01/control | Status: {buzzerState ? 'ON' : 'OFF'}
+                Topic: {MQTT_TOPICS.BUZZER_CONTROL} | Status: {buzzerState ? 'ON' : 'OFF'}
               </small>
             </div>
           </div>
@@ -326,9 +321,20 @@ export default function DoorLockStatus() {
               ) : (
                 messages.map((msg, index) => (
                   <div key={index} className="border-bottom pb-2 mb-2">
-                    <small className="text-muted">[{new Date().toLocaleTimeString()}]</small>
-                    <br />
-                    <code>{msg}</code>
+                    <div className="d-flex justify-content-between align-items-start">
+                      <div>
+                        <small className="text-muted">[{formatTime(msg.timestamp)}]</small>
+                        <br />
+                        <code>
+                          {msg.type === 'reader' && '📋 '}
+                          {msg.type === 'door' && '🚪 '}
+                          {msg.type === 'pinpad' && '⌨️ '}
+                          {msg.type === 'buzzer' && '🔊 '}
+                          {msg.type === 'sent' && '📤 '}
+                          {msg.message}
+                        </code>
+                      </div>
+                    </div>
                   </div>
                 ))
               )}
@@ -337,29 +343,37 @@ export default function DoorLockStatus() {
         </div>
       </div>
 
-      {/* Current State Debug */}
+      {/* Debug Information */}
       <div className="row mt-4">
         <div className="col-12">
           <div className="card">
             <div className="card-header">
-              <h6 className="mb-0">🔧 Current State</h6>
+              <h6 className="mb-0">🔧 Debug Information</h6>
             </div>
             <div className="card-body">
-              <pre className="mb-0">
-                {JSON.stringify({
-                  connectionStatus,
-                  doorStatus,
-                  buzzerState,
-                  loading,
-                  subscribedTopics: [
-                    'doorlock/status/reader',
-                    'doorlock/status/door', 
-                    'doorlock/status/pinpad',
-                    'buzzer/status',
-                    '#' // all topics for debug
-                  ]
-                }, null, 2)}
-              </pre>
+              <div className="row">
+                <div className="col-md-6">
+                  <h6>Subscribed Topics:</h6>
+                  <ul className="small">
+                    <li><code>{MQTT_TOPICS.READER_STATUS}</code></li>
+                    <li><code>{MQTT_TOPICS.DOOR_STATUS}</code></li>
+                    <li><code>{MQTT_TOPICS.PINPAD_STATUS}</code></li>
+                    <li><code>{MQTT_TOPICS.BUZZER_STATUS}</code></li>
+                    <li><code>doorlock/status/#</code></li>
+                  </ul>
+                </div>
+                <div className="col-md-6">
+                  <h6>Current State:</h6>
+                  <pre className="small">
+{JSON.stringify({
+  connectionStatus,
+  doorStatus,
+  buzzerState,
+  loading
+}, null, 2)}
+                  </pre>
+                </div>
+              </div>
             </div>
           </div>
         </div>
