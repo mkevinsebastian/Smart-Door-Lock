@@ -49,7 +49,6 @@ var deviceStatus = struct {
 	Data: make(map[string]interface{}),
 }
 
-
 // ====== MODELS ======
 type User struct {
 	ID        uint      `json:"id" gorm:"primaryKey"`
@@ -274,7 +273,8 @@ func sendTelegramNotification(message string) error {
 	return nil
 }
 
-func init() {
+// Initialize device status
+func initDeviceStatus() {
 	deviceStatus.Lock()
 	deviceStatus.Data["door"] = "closed"
 	deviceStatus.Data["reader"] = "disconnected"
@@ -283,7 +283,6 @@ func init() {
 	deviceStatus.Data["last_updated"] = time.Now()
 	deviceStatus.Unlock()
 }
-
 
 // --- MQTT FUNCTIONS ---
 func initMQTT() {
@@ -421,6 +420,7 @@ func main() {
 	db := initDB()
 	initTelegramBot()
 	initMQTT()
+	initDeviceStatus() // Initialize device status
 
 	r := gin.Default()
 	r.Use(cors.New(cors.Config{
@@ -568,6 +568,193 @@ func main() {
 
 	// Protected routes
 	api.Use(authMiddleware())
+
+	// ====== DEVICE STATUS ENDPOINTS (REST API BYPASS MQTT) ======
+
+	// Get all device status
+	api.GET("/device/status", func(c *gin.Context) {
+		deviceStatus.RLock()
+		defer deviceStatus.RUnlock()
+		
+		c.JSON(http.StatusOK, deviceStatus.Data)
+	})
+
+	// Update door status
+	api.POST("/device/status/door", func(c *gin.Context) {
+		var req struct {
+			DoorID  string `json:"door_id"`
+			Status  string `json:"status"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		deviceStatus.Lock()
+		deviceStatus.Data["door"] = req.Status
+		deviceStatus.Data["last_updated"] = time.Now()
+		deviceStatus.Unlock()
+		
+		log.Printf("Door status updated via REST: %s -> %s", req.DoorID, req.Status)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": fmt.Sprintf("Door %s status updated to %s", req.DoorID, req.Status),
+		})
+	})
+
+	// Update reader status
+	api.POST("/device/status/reader", func(c *gin.Context) {
+		var req struct {
+			ReaderID string `json:"reader_id"`
+			Status   string `json:"status"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		deviceStatus.Lock()
+		deviceStatus.Data["reader"] = req.Status
+		deviceStatus.Data["last_updated"] = time.Now()
+		deviceStatus.Unlock()
+		
+		log.Printf("Reader status updated via REST: %s -> %s", req.ReaderID, req.Status)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": fmt.Sprintf("Reader %s status updated to %s", req.ReaderID, req.Status),
+		})
+	})
+
+	// Update pinpad status
+	api.POST("/device/status/pinpad", func(c *gin.Context) {
+		var req struct {
+			PinpadID string `json:"pinpad_id"`
+			Status   string `json:"status"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		deviceStatus.Lock()
+		deviceStatus.Data["pinpad"] = req.Status
+		deviceStatus.Data["last_updated"] = time.Now()
+		deviceStatus.Unlock()
+		
+		log.Printf("Pinpad status updated via REST: %s -> %s", req.PinpadID, req.Status)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": fmt.Sprintf("Pinpad %s status updated to %s", req.PinpadID, req.Status),
+		})
+	})
+
+	// Update buzzer status
+	api.POST("/device/status/buzzer", func(c *gin.Context) {
+		var req struct {
+			BuzzerID string `json:"buzzer_id"`
+			Status   bool   `json:"status"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		deviceStatus.Lock()
+		deviceStatus.Data["buzzer"] = req.Status
+		deviceStatus.Data["last_updated"] = time.Now()
+		deviceStatus.Unlock()
+		
+		statusText := "off"
+		if req.Status {
+			statusText = "on"
+		}
+		
+		log.Printf("Buzzer status updated via REST: %s -> %s", req.BuzzerID, statusText)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": fmt.Sprintf("Buzzer %s status updated to %s", req.BuzzerID, statusText),
+		})
+	})
+
+	// Simulate attendance event
+	api.POST("/device/events/attendance", func(c *gin.Context) {
+		var req struct {
+			Username  string `json:"username"`
+			AccessID  string `json:"access_id"`
+			Status    string `json:"status"`
+			Arrow     string `json:"arrow"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		// Create attendance record
+		rec := Attendance{
+			Username:  req.Username,
+			AccessID:  req.AccessID,
+			Status:    req.Status,
+			Arrow:     req.Arrow,
+			CreatedAt: time.Now(),
+		}
+		
+		if err := db.Create(&rec).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create attendance record"})
+			return
+		}
+		
+		log.Printf("Attendance event simulated via REST: %s (%s) - %s", req.Username, req.AccessID, req.Arrow)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": "Attendance event simulated successfully",
+			"record_id": rec.ID,
+		})
+	})
+
+	// Simulate alarm event
+	api.POST("/device/events/alarm", func(c *gin.Context) {
+		var req struct {
+			Username string `json:"username"`
+			AccessID string `json:"access_id"`
+			Reason   string `json:"reason"`
+		}
+		
+		if err := c.BindJSON(&req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
+			return
+		}
+		
+		// Create alarm record
+		al := Alarm{
+			Username:  req.Username,
+			AccessID:  req.AccessID,
+			Reason:    req.Reason,
+			CreatedAt: time.Now(),
+		}
+		
+		if err := db.Create(&al).Error; err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create alarm record"})
+			return
+		}
+		
+		log.Printf("Alarm event simulated via REST: %s (%s) - %s", req.Username, req.AccessID, req.Reason)
+		
+		c.JSON(http.StatusOK, gin.H{
+			"status":  "success",
+			"message": "Alarm event simulated successfully",
+			"record_id": al.ID,
+		})
+	})
 
 	// ====== USER MANAGEMENT ======
 	userGroup := api.Group("/users")
@@ -1029,189 +1216,4 @@ func main() {
 	if err := r.Run(":8090"); err != nil {
 		log.Fatal(err)
 	}
-
-	api.GET("/device/status", func(c *gin.Context) {
-	deviceStatus.RLock()
-	defer deviceStatus.RUnlock()
-	
-	c.JSON(http.StatusOK, deviceStatus.Data)
-})
-
-// Update door status
-api.POST("/device/status/door", func(c *gin.Context) {
-	var req struct {
-		DoorID  string `json:"door_id"`
-		Status  string `json:"status"`
-	}
-	
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	
-	deviceStatus.Lock()
-	deviceStatus.Data["door"] = req.Status
-	deviceStatus.Data["last_updated"] = time.Now()
-	deviceStatus.Unlock()
-	
-	log.Printf("Door status updated via REST: %s -> %s", req.DoorID, req.Status)
-	
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": fmt.Sprintf("Door %s status updated to %s", req.DoorID, req.Status),
-	})
-})
-
-// Update reader status
-api.POST("/device/status/reader", func(c *gin.Context) {
-	var req struct {
-		ReaderID string `json:"reader_id"`
-		Status   string `json:"status"`
-	}
-	
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	
-	deviceStatus.Lock()
-	deviceStatus.Data["reader"] = req.Status
-	deviceStatus.Data["last_updated"] = time.Now()
-	deviceStatus.Unlock()
-	
-	log.Printf("Reader status updated via REST: %s -> %s", req.ReaderID, req.Status)
-	
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": fmt.Sprintf("Reader %s status updated to %s", req.ReaderID, req.Status),
-	})
-})
-
-// Update pinpad status
-api.POST("/device/status/pinpad", func(c *gin.Context) {
-	var req struct {
-		PinpadID string `json:"pinpad_id"`
-		Status   string `json:"status"`
-	}
-	
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	
-	deviceStatus.Lock()
-	deviceStatus.Data["pinpad"] = req.Status
-	deviceStatus.Data["last_updated"] = time.Now()
-	deviceStatus.Unlock()
-	
-	log.Printf("Pinpad status updated via REST: %s -> %s", req.PinpadID, req.Status)
-	
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": fmt.Sprintf("Pinpad %s status updated to %s", req.PinpadID, req.Status),
-	})
-})
-
-// Update buzzer status
-api.POST("/device/status/buzzer", func(c *gin.Context) {
-	var req struct {
-		BuzzerID string `json:"buzzer_id"`
-		Status   bool   `json:"status"`
-	}
-	
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	
-	deviceStatus.Lock()
-	deviceStatus.Data["buzzer"] = req.Status
-	deviceStatus.Data["last_updated"] = time.Now()
-	deviceStatus.Unlock()
-	
-	statusText := "off"
-	if req.Status {
-		statusText = "on"
-	}
-	
-	log.Printf("Buzzer status updated via REST: %s -> %s", req.BuzzerID, statusText)
-	
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": fmt.Sprintf("Buzzer %s status updated to %s", req.BuzzerID, statusText),
-	})
-})
-
-// Simulate attendance event
-api.POST("/device/events/attendance", func(c *gin.Context) {
-	var req struct {
-		Username  string `json:"username"`
-		AccessID  string `json:"access_id"`
-		Status    string `json:"status"`
-		Arrow     string `json:"arrow"`
-	}
-	
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	
-	// Create attendance record
-	rec := Attendance{
-		Username:  req.Username,
-		AccessID:  req.AccessID,
-		Status:    req.Status,
-		Arrow:     req.Arrow,
-		CreatedAt: time.Now(),
-	}
-	
-	if err := db.Create(&rec).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create attendance record"})
-		return
-	}
-	
-	log.Printf("Attendance event simulated via REST: %s (%s) - %s", req.Username, req.AccessID, req.Arrow)
-	
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": "Attendance event simulated successfully",
-		"record_id": rec.ID,
-	})
-})
-
-// Simulate alarm event
-api.POST("/device/events/alarm", func(c *gin.Context) {
-	var req struct {
-		Username string `json:"username"`
-		AccessID string `json:"access_id"`
-		Reason   string `json:"reason"`
-	}
-	
-	if err := c.BindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid request"})
-		return
-	}
-	
-	// Create alarm record
-	al := Alarm{
-		Username:  req.Username,
-		AccessID:  req.AccessID,
-		Reason:    req.Reason,
-		CreatedAt: time.Now(),
-	}
-	
-	if err := db.Create(&al).Error; err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "failed to create alarm record"})
-		return
-	}
-	
-	log.Printf("Alarm event simulated via REST: %s (%s) - %s", req.Username, req.AccessID, req.Reason)
-	
-	c.JSON(http.StatusOK, gin.H{
-		"status":  "success",
-		"message": "Alarm event simulated successfully",
-		"record_id": al.ID,
-	})
-})
 }
-
