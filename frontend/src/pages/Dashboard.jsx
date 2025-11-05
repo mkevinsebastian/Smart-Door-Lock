@@ -8,7 +8,9 @@ import {
   getFrequentAccess,
   getLongOpenDoors,
   getDashboardStats,
-  mqttService
+  getDeviceStatus,
+  simulateAttendanceEvent,
+  simulateAlarmEvent
 } from "../services/api";
 import {
   LineChart,
@@ -55,160 +57,116 @@ export default function Dashboard() {
     recentActivities: []
   });
 
+  // Polling interval reference
+  const _pollingIntervalRef = useState(null);
+
   useEffect(() => {
     loadDashboardData();
-    setupMQTTListeners();
+    setupRESTPolling();
     
     return () => {
-      // Cleanup MQTT listeners
-      mqttService.unsubscribe("attendance/#");
-      mqttService.unsubscribe("alarms/#");
-      mqttService.unsubscribe("doorlock/status/#");
-      mqttService.unsubscribe("users/online");
-      mqttService.unsubscribe("system/update");
-      mqttService.unsubscribe("doorlock/access");
+      // Cleanup polling
+      if (_pollingIntervalRef.current) {
+        clearInterval(_pollingIntervalRef.current);
+      }
     };
   }, []);
 
-  const setupMQTTListeners = () => {
-    mqttService.connect().then(() => {
-      console.log('🔔 Dashboard MQTT listeners activated');
-
-      // ==================== ATTENDANCE REAL-TIME UPDATES ====================
-      mqttService.subscribe("attendance/new", (message) => {
-        console.log("📊 Real-time attendance update:", message);
+  const setupRESTPolling = () => {
+    // Poll untuk status device setiap 5 detik
+    const interval = setInterval(async () => {
+      try {
+        const status = await getDeviceStatus();
         setRealTimeData(prev => ({
           ...prev,
-          newAttendance: prev.newAttendance + 1,
-          recentActivities: [
-            { type: 'attendance', message: 'New attendance record', timestamp: new Date() },
-            ...prev.recentActivities.slice(0, 9) // Keep last 10 activities
-          ]
+          doorStatus: status.door || 'closed'
         }));
-        // Auto-refresh attendance data
-        setTimeout(() => loadAttendanceData(), 500);
-      });
-
-      // Listen for door access events (from controller)
-      mqttService.subscribe("doorlock/access", (message) => {
-        console.log("🚪 Door access from controller:", message);
-        try {
-          const data = typeof message === 'string' ? JSON.parse(message) : message;
-          if (data.access_id && data.status === 'success') {
-            setRealTimeData(prev => ({
-              ...prev,
-              newAttendance: prev.newAttendance + 1,
-              recentActivities: [
-                { 
-                  type: 'access', 
-                  message: `Access: ${data.access_id}`, 
-                  timestamp: new Date(),
-                  user: data.username || 'Unknown'
-                },
-                ...prev.recentActivities.slice(0, 9)
-              ]
-            }));
-            setTimeout(() => loadAttendanceData(), 1000);
-          }
-        } catch (error) {
-          console.log('Raw door access message:', message);
-        }
-      });
-
-      // Listen for all attendance topics
-      mqttService.subscribe("attendance/#", (message) => {
-        console.log("📈 Attendance topic update:", message);
-        setLastUpdate(new Date());
-      });
-
-      // ==================== ALARMS REAL-TIME UPDATES ====================
-      mqttService.subscribe("alarms/new", (message) => {
-        console.log("🚨 Real-time alarm update:", message);
+        
+        // Add polling activity to log
         setRealTimeData(prev => ({
           ...prev,
-          newAlarms: prev.newAlarms + 1,
           recentActivities: [
-            { type: 'alarm', message: 'New alarm triggered', timestamp: new Date() },
+            { 
+              type: 'polling', 
+              message: `Status polled: door=${status.door}`, 
+              timestamp: new Date() 
+            },
             ...prev.recentActivities.slice(0, 9)
           ]
         }));
-        // Auto-refresh alarms data
-        setTimeout(() => loadAlarmsData(), 500);
-      });
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    }, 5000);
+    
+    _pollingIntervalRef.current = interval;
+  };
 
-      // Listen for doorlock alarm events (from controller)
-      mqttService.subscribe("doorlock/alarm", (message) => {
-        console.log("🔴 Doorlock alarm from controller:", message);
-        try {
-          const data = typeof message === 'string' ? JSON.parse(message) : message;
-          setRealTimeData(prev => ({
-            ...prev,
-            newAlarms: prev.newAlarms + 1,
-            recentActivities: [
-              { 
-                type: 'alarm', 
-                message: `Alarm: ${data.reason || 'Security alert'}`, 
-                timestamp: new Date(),
-                user: data.username || 'Unknown'
-              },
-              ...prev.recentActivities.slice(0, 9)
-            ]
-          }));
-          setTimeout(() => loadAlarmsData(), 1000);
-        } catch (error) {
-          console.log('Raw alarm message:', message);
-        }
-      });
+  const simulateNewAttendance = async () => {
+    try {
+      const testData = {
+        username: "Test User",
+        access_id: "TEST001",
+        status: "success",
+        arrow: Math.random() > 0.5 ? "in" : "out"
+      };
+      
+      await simulateAttendanceEvent(testData);
+      
+      setRealTimeData(prev => ({
+        ...prev,
+        newAttendance: prev.newAttendance + 1,
+        recentActivities: [
+          { 
+            type: 'attendance', 
+            message: `Simulated: ${testData.access_id} ${testData.arrow.toUpperCase()}`, 
+            timestamp: new Date(),
+            user: testData.username
+          },
+          ...prev.recentActivities.slice(0, 9)
+        ]
+      }));
+      
+      // Refresh data setelah simulasi
+      setTimeout(() => loadAttendanceData(), 1000);
+      
+    } catch (error) {
+      console.error('Failed to simulate attendance:', error);
+      alert('Failed to simulate attendance event');
+    }
+  };
 
-      // Listen for all alarm topics
-      mqttService.subscribe("alarms/#", (message) => {
-        console.log("⚠️ Alarm topic update:", message);
-        setLastUpdate(new Date());
-      });
-
-      // ==================== DOOR STATUS UPDATES ====================
-      mqttService.subscribe("doorlock/status/door", (message) => {
-        console.log("🚪 Real-time door status:", message);
-        try {
-          const data = typeof message === 'string' ? JSON.parse(message) : message;
-          setRealTimeData(prev => ({
-            ...prev,
-            doorStatus: data.state || data.status || 'closed'
-          }));
-        } catch {
-          if (typeof message === 'string') {
-            setRealTimeData(prev => ({
-              ...prev,
-              doorStatus: message.includes('open') ? 'open' : 'closed'
-            }));
-          }
-        }
-      });
-
-      // ==================== SYSTEM UPDATES ====================
-      mqttService.subscribe("users/online", (message) => {
-        console.log("👥 Real-time online users:", message);
-        try {
-          const data = typeof message === 'string' ? JSON.parse(message) : message;
-          setRealTimeData(prev => ({
-            ...prev,
-            onlineUsers: data.count || data.total || 0
-          }));
-        } catch {
-          // Ignore parse errors
-        }
-      });
-
-      mqttService.subscribe("system/update", (message) => {
-        console.log("🔄 System update received:", message);
-        setLastUpdate(new Date());
-        // Refresh all data when system update received
-        loadDashboardData();
-      });
-
-    }).catch(err => {
-      console.error('Dashboard MQTT connection failed:', err);
-    });
+  const simulateNewAlarm = async () => {
+    try {
+      const testData = {
+        username: "Security System",
+        access_id: "ALARM001",
+        reason: "Test alarm simulation"
+      };
+      
+      await simulateAlarmEvent(testData);
+      
+      setRealTimeData(prev => ({
+        ...prev,
+        newAlarms: prev.newAlarms + 1,
+        recentActivities: [
+          { 
+            type: 'alarm', 
+            message: `Simulated: ${testData.reason}`, 
+            timestamp: new Date(),
+            user: testData.username
+          },
+          ...prev.recentActivities.slice(0, 9)
+        ]
+      }));
+      
+      // Refresh data setelah simulasi
+      setTimeout(() => loadAlarmsData(), 1000);
+      
+    } catch (error) {
+      console.error('Failed to simulate alarm:', error);
+      alert('Failed to simulate alarm event');
+    }
   };
 
   const loadDashboardData = async () => {
@@ -224,7 +182,8 @@ export default function Dashboard() {
         getAttendanceSummary(),
         getFrequentAccess(24),
         getLongOpenDoors(60),
-        getDashboardStats()
+        getDashboardStats(),
+        getDeviceStatus() // Tambahkan status device
       ]);
 
       const [
@@ -235,7 +194,8 @@ export default function Dashboard() {
         summaryResult,
         frequentAccessResult,
         longOpenDoorsResult,
-        dashboardStatsResult
+        dashboardStatsResult,
+        deviceStatusResult
       ] = results;
 
       if (usersResult.status === 'fulfilled') setUsers(usersResult.value);
@@ -248,6 +208,14 @@ export default function Dashboard() {
       if (frequentAccessResult.status === 'fulfilled') setFrequentAccess(frequentAccessResult.frequent_access || []);
       if (longOpenDoorsResult.status === 'fulfilled') setLongOpenDoors(longOpenDoorsResult.long_open_doors || []);
       if (dashboardStatsResult.status === 'fulfilled') setDashboardStats(dashboardStatsResult);
+      
+      // Update door status dari device status
+      if (deviceStatusResult.status === 'fulfilled') {
+        setRealTimeData(prev => ({
+          ...prev,
+          doorStatus: deviceStatusResult.value.door || 'closed'
+        }));
+      }
 
       if (summaryResult.status === 'fulfilled' && summaryResult.value.length > 0) {
         setSummary(summaryResult.value);
@@ -366,7 +334,7 @@ export default function Dashboard() {
         </div>
         <div className="d-flex align-items-center mt-2 mt-md-0">
           <span className="badge bg-success me-2">
-            {mqttService.isConnected ? '🟢 Connected' : '🔴 Disconnected'}
+            🟢 REST API
           </span>
           <button 
             className="btn btn-sm btn-outline-primary"
@@ -524,7 +492,7 @@ export default function Dashboard() {
               <div className="card shadow-sm">
                 <div className="card-header bg-white d-flex justify-content-between align-items-center">
                   <h5 className="mb-0">📈 Visitor In (Last 7 Days)</h5>
-                  <span className="badge bg-primary">Real-time</span>
+                  <span className="badge bg-primary">REST API</span>
                 </div>
                 <div className="card-body" style={{ minHeight: "250px" }}>
                   {attendanceIn.length > 0 ? (
@@ -558,7 +526,7 @@ export default function Dashboard() {
               <div className="card shadow-sm">
                 <div className="card-header bg-white d-flex justify-content-between align-items-center">
                   <h5 className="mb-0">📈 Visitor Out (Last 7 Days)</h5>
-                  <span className="badge bg-success">Real-time</span>
+                  <span className="badge bg-success">REST API</span>
                 </div>
                 <div className="card-body" style={{ minHeight: "250px" }}>
                   {attendanceOut.length > 0 ? (
@@ -598,7 +566,7 @@ export default function Dashboard() {
             <div className="card shadow-sm">
               <div className="card-header bg-white">
                 <h5 className="mb-0">📡 Real-time Activity Monitor</h5>
-                <small className="text-muted">Live updates from controllers via MQTT</small>
+                <small className="text-muted">Live updates via REST API with 5-second polling</small>
               </div>
               <div className="card-body">
                 <div className="row">
@@ -643,6 +611,7 @@ export default function Dashboard() {
                                 {activity.type === 'attendance' && '📊 '}
                                 {activity.type === 'alarm' && '🚨 '}
                                 {activity.type === 'access' && '🚪 '}
+                                {activity.type === 'polling' && '🔄 '}
                                 {activity.message}
                                 {activity.user && ` (${activity.user})`}
                               </small>
@@ -659,12 +628,17 @@ export default function Dashboard() {
                     <h6>📊 System Status</h6>
                     <div className="card bg-light">
                       <div className="card-body">
-                        <p><strong>MQTT Connection:</strong> 
-                          <span className={`badge ms-2 ${mqttService.isConnected ? 'bg-success' : 'bg-danger'}`}>
-                            {mqttService.isConnected ? 'CONNECTED' : 'DISCONNECTED'}
+                        <p><strong>Connection:</strong> 
+                          <span className="badge bg-success ms-2">
+                            REST API CONNECTED
                           </span>
                         </p>
                         <p><strong>Last Update:</strong> {formatLastUpdate(lastUpdate)}</p>
+                        <p><strong>Polling:</strong> 
+                          <span className="badge bg-info ms-2">
+                            ACTIVE (5s)
+                          </span>
+                        </p>
                         <p><strong>Total Data Loaded:</strong></p>
                         <ul>
                           <li>Users: {users.length}</li>
@@ -673,13 +647,27 @@ export default function Dashboard() {
                           <li>Doorlock Users: {doorlockUsers}</li>
                         </ul>
                         
-                        <h6 className="mt-3">📡 Subscribed Topics</h6>
+                        <h6 className="mt-3">🛠️ Simulation Tools</h6>
+                        <div className="d-grid gap-2">
+                          <button 
+                            className="btn btn-outline-success btn-sm"
+                            onClick={simulateNewAttendance}
+                          >
+                            📊 Simulate Attendance
+                          </button>
+                          <button 
+                            className="btn btn-outline-danger btn-sm"
+                            onClick={simulateNewAlarm}
+                          >
+                            🚨 Simulate Alarm
+                          </button>
+                        </div>
+
+                        <h6 className="mt-3">🔗 REST API Endpoints</h6>
                         <div className="small">
-                          <code>attendance/new</code> - New attendance<br/>
-                          <code>doorlock/access</code> - Door access events<br/>
-                          <code>alarms/new</code> - New alarms<br/>
-                          <code>doorlock/alarm</code> - Doorlock alarms<br/>
-                          <code>system/update</code> - System updates
+                          <code>GET /api/device/status</code> - Device status<br/>
+                          <code>POST /api/device/events/attendance</code> - Simulate attendance<br/>
+                          <code>POST /api/device/events/alarm</code> - Simulate alarm
                         </div>
                       </div>
                     </div>
@@ -688,7 +676,7 @@ export default function Dashboard() {
                 
                 <div className="mt-4">
                   <h6>🔄 Quick Actions</h6>
-                  <div className="d-flex gap-2">
+                  <div className="d-flex gap-2 flex-wrap">
                     <button 
                       className="btn btn-outline-primary btn-sm"
                       onClick={loadDashboardData}
@@ -708,6 +696,18 @@ export default function Dashboard() {
                     >
                       Clear Counters
                     </button>
+                    <button 
+                      className="btn btn-outline-info btn-sm"
+                      onClick={simulateNewAttendance}
+                    >
+                      Simulate Attendance
+                    </button>
+                    <button 
+                      className="btn btn-outline-warning btn-sm"
+                      onClick={simulateNewAlarm}
+                    >
+                      Simulate Alarm
+                    </button>
                   </div>
                 </div>
               </div>
@@ -721,7 +721,7 @@ export default function Dashboard() {
         <div className="col-12">
           <div className="text-center">
             <small className="text-muted">
-              🔄 Auto-refresh enabled • Listening to controller events via MQTT
+              🔄 REST API polling enabled • 5-second intervals • No MQTT dependency
             </small>
           </div>
         </div>

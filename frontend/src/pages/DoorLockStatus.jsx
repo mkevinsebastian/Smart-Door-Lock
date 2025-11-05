@@ -1,5 +1,13 @@
 import { useEffect, useState } from "react";
-import { controlDoorLock, controlBuzzer, mqttService, MQTT_TOPICS } from "../services/api";
+import { 
+  controlDoorLock, 
+  controlBuzzer, 
+  updateDoorStatus, 
+  updateReaderStatus, 
+  updatePinpadStatus, 
+  updateBuzzerStatus,
+  getDeviceStatus 
+} from "../services/api";
 
 export default function DoorLockStatus() {
   const [doorStatus, setDoorStatus] = useState({
@@ -9,102 +17,61 @@ export default function DoorLockStatus() {
   });
   const [buzzerState, setBuzzerState] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState(false);
+  const [connectionStatus, setConnectionStatus] = useState(true);
   const [messages, setMessages] = useState([]);
+  const [pollingInterval, setPollingInterval] = useState(null);
+
+  // Polling untuk status device
+  const startStatusPolling = () => {
+    const interval = setInterval(async () => {
+      try {
+        const status = await getDeviceStatus();
+        setDoorStatus(prev => ({
+          ...prev,
+          door: status.door || prev.door,
+          reader: status.reader || prev.reader,
+          pinpad: status.pinpad || prev.pinpad
+        }));
+        if (status.buzzer !== undefined) {
+          setBuzzerState(status.buzzer);
+        }
+        
+        // Add to message log
+        setMessages(prev => [...prev.slice(-19), {
+          type: 'polling',
+          message: `Status updated: door=${status.door}, reader=${status.reader}`,
+          timestamp: new Date()
+        }]);
+      } catch (error) {
+        console.error('Polling error:', error);
+      }
+    }, 3000); // Poll every 3 seconds
+    
+    setPollingInterval(interval);
+    return interval;
+  };
 
   useEffect(() => {
-    const initializeMQTT = async () => {
+    // Load initial status
+    const loadInitialStatus = async () => {
       try {
-        await mqttService.connect();
-        setConnectionStatus(true);
-        
-        console.log('🚪 DoorLockStatus MQTT listeners activated');
-
-        // Subscribe to reader status
-        mqttService.subscribe(MQTT_TOPICS.READER_STATUS, (message) => {
-          console.log('📋 Reader status received:', message);
-          setMessages(prev => [...prev, {type: 'reader', message, timestamp: new Date()}]);
-          
-          try {
-            const data = typeof message === 'string' ? JSON.parse(message) : message;
-            const status = data.status || data.state || message;
-            setDoorStatus(prev => ({ ...prev, reader: status }));
-          } catch {
-            // Handle plain string
-            if (typeof message === 'string') {
-              setDoorStatus(prev => ({ ...prev, reader: message }));
-            }
-          }
+        const status = await getDeviceStatus();
+        setDoorStatus({
+          door: status.door || 'closed',
+          reader: status.reader || 'disconnected',
+          pinpad: status.pinpad || 'disconnected'
         });
-
-        // Subscribe to door status
-        mqttService.subscribe(MQTT_TOPICS.DOOR_STATUS, (message) => {
-          console.log('🚪 Door status received:', message);
-          setMessages(prev => [...prev, {type: 'door', message, timestamp: new Date()}]);
-          
-          try {
-            const data = typeof message === 'string' ? JSON.parse(message) : message;
-            const status = data.state || data.status || message;
-            setDoorStatus(prev => ({ ...prev, door: status }));
-          } catch {
-            if (typeof message === 'string') {
-              setDoorStatus(prev => ({ ...prev, door: message }));
-            }
-          }
-        });
-
-        // Subscribe to pinpad status
-        mqttService.subscribe(MQTT_TOPICS.PINPAD_STATUS, (message) => {
-          console.log('⌨️ Pinpad status received:', message);
-          setMessages(prev => [...prev, {type: 'pinpad', message, timestamp: new Date()}]);
-          
-          try {
-            const data = typeof message === 'string' ? JSON.parse(message) : message;
-            const status = data.status || data.state || message;
-            setDoorStatus(prev => ({ ...prev, pinpad: status }));
-          } catch {
-            if (typeof message === 'string') {
-              setDoorStatus(prev => ({ ...prev, pinpad: message }));
-            }
-          }
-        });
-
-        // Subscribe to buzzer status
-        mqttService.subscribe(MQTT_TOPICS.BUZZER_STATUS, (message) => {
-          console.log('🔊 Buzzer status received:', message);
-          setMessages(prev => [...prev, {type: 'buzzer', message, timestamp: new Date()}]);
-          
-          try {
-            const data = typeof message === 'string' ? JSON.parse(message) : message;
-            const status = data.state || data.status || message;
-            setBuzzerState(status === 'on' || status === true);
-          } catch {
-            if (typeof message === 'string') {
-              setBuzzerState(message === 'on');
-            }
-          }
-        });
-
-        // Subscribe to all status topics for debugging
-        mqttService.subscribe("doorlock/status/#", (message) => {
-          console.log('🔍 All doorlock status:', message);
-        });
-
+        setBuzzerState(status.buzzer || false);
       } catch (error) {
-        console.error('Failed to initialize MQTT:', error);
-        setConnectionStatus(false);
+        console.error('Failed to load initial status:', error);
       }
     };
 
-    initializeMQTT();
+    loadInitialStatus();
+    const interval = startStatusPolling();
 
-    // Cleanup
     return () => {
-      mqttService.unsubscribe(MQTT_TOPICS.READER_STATUS);
-      mqttService.unsubscribe(MQTT_TOPICS.DOOR_STATUS);
-      mqttService.unsubscribe(MQTT_TOPICS.PINPAD_STATUS);
-      mqttService.unsubscribe(MQTT_TOPICS.BUZZER_STATUS);
-      mqttService.unsubscribe("doorlock/status/#");
+      if (interval) clearInterval(interval);
     };
   }, []);
 
@@ -112,22 +79,34 @@ export default function DoorLockStatus() {
     try {
       setLoading(true);
       
-      const message = {
-        command: 'unlock',
-        door_id: 'D01',
-        timestamp: new Date().toISOString()
-      };
+      // Update status via REST API
+      await updateDoorStatus('D01', 'open');
       
-      const success = mqttService.publish(MQTT_TOPICS.DOOR_CONTROL, message);
+      // Also send control command
+      await controlDoorLock('D01', 'unlock');
       
-      if (success) {
-        alert('🚪 Door unlock command sent to D01!');
-        setMessages(prev => [...prev, {type: 'sent', message: 'doorlock/D01/control unlock', timestamp: new Date()}]);
-      } else {
-        // Fallback to HTTP API
-        await controlDoorLock('D01', 'unlock');
-        alert('⚠️ Door command sent via HTTP (MQTT failed)');
-      }
+      // Update local state
+      setDoorStatus(prev => ({ ...prev, door: 'open' }));
+      
+      // Add to message log
+      setMessages(prev => [...prev, {
+        type: 'sent', 
+        message: 'Door D01 unlock command sent via REST API', 
+        timestamp: new Date()
+      }]);
+      
+      alert('🚪 Door unlock command sent to D01 via REST API!');
+      
+      // Auto close after 5 seconds
+      setTimeout(async () => {
+        await updateDoorStatus('D01', 'closed');
+        setDoorStatus(prev => ({ ...prev, door: 'closed' }));
+        setMessages(prev => [...prev, {
+          type: 'auto',
+          message: 'Door D01 auto-closed',
+          timestamp: new Date()
+        }]);
+      }, 5000);
       
     } catch (error) {
       alert(`❌ Failed to open door: ${error.message}`);
@@ -142,29 +121,59 @@ export default function DoorLockStatus() {
       const newBuzzerState = !buzzerState;
       const command = newBuzzerState ? 'on' : 'off';
       
-      const message = {
-        command: command,
-        buzzer_id: 'B01',
-        duration: newBuzzerState ? 10 : 0,
-        timestamp: new Date().toISOString()
-      };
+      // Update status via REST API
+      await updateBuzzerStatus('B01', newBuzzerState);
       
-      const success = mqttService.publish(MQTT_TOPICS.BUZZER_CONTROL, message);
+      // Also send control command
+      await controlBuzzer('B01', command, newBuzzerState ? 10 : 0);
       
-      if (success) {
-        setBuzzerState(newBuzzerState);
-        alert(`🔊 Buzzer ${command} command sent to B01!`);
-        setMessages(prev => [...prev, {type: 'sent', message: `buzzer/B01/control ${command}`, timestamp: new Date()}]);
-      } else {
-        // Fallback to HTTP API
-        await controlBuzzer('B01', command, newBuzzerState ? 10 : 0);
-        alert(`⚠️ Buzzer command sent via HTTP (MQTT failed)`);
-      }
+      // Update local state
+      setBuzzerState(newBuzzerState);
+      
+      // Add to message log
+      setMessages(prev => [...prev, {
+        type: 'sent', 
+        message: `Buzzer ${command} command sent via REST API`, 
+        timestamp: new Date()
+      }]);
+      
+      alert(`🔊 Buzzer ${command} command sent to B01 via REST API!`);
       
     } catch (error) {
       alert(`❌ Failed to control buzzer: ${error.message}`);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const simulateDeviceEvents = async () => {
+    try {
+      // Simulate reader connection
+      await updateReaderStatus('R01', 'connected');
+      setDoorStatus(prev => ({ ...prev, reader: 'connected' }));
+      
+      setMessages(prev => [...prev, {
+        type: 'simulation',
+        message: 'Reader R01 connected (simulated)',
+        timestamp: new Date()
+      }]);
+
+      // Simulate pinpad connection after 1 second
+      setTimeout(async () => {
+        await updatePinpadStatus('P01', 'connected');
+        setDoorStatus(prev => ({ ...prev, pinpad: 'connected' }));
+        
+        setMessages(prev => [...prev, {
+          type: 'simulation',
+          message: 'Pinpad P01 connected (simulated)',
+          timestamp: new Date()
+        }]);
+      }, 1000);
+
+      alert('🔧 Device events simulated via REST API!');
+
+    } catch (error) {
+      alert(`❌ Failed to simulate events: ${error.message}`);
     }
   };
 
@@ -196,22 +205,22 @@ export default function DoorLockStatus() {
 
   return (
     <div className="container py-4">
-      <h2>🚪 Door Lock Status & Control</h2>
+      <h2>🚪 Door Lock Status & Control (REST API)</h2>
       
       {/* Connection Status */}
       <div className="row mb-4">
         <div className="col-12">
-          <div className={`alert ${connectionStatus ? 'alert-success' : 'alert-warning'}`}>
-            <strong>MQTT Status:</strong> {connectionStatus ? '🟢 CONNECTED' : '🟡 CONNECTING...'}
+          <div className="alert alert-success">
+            <strong>Connection Status:</strong> 🟢 CONNECTED (REST API)
             <br />
-            <small>Using Paho MQTT Library • Subscribed to all status topics</small>
+            <small>Using REST API with 3-second polling • No MQTT dependency</small>
           </div>
         </div>
       </div>
 
       {/* Status Indicators */}
       <div className="row mt-4">
-        <div className="col-md-4">
+        <div className="col-md-3">
           <div className="card text-center shadow-sm">
             <div className="card-body">
               <h5 className="card-title">Door Status</h5>
@@ -223,7 +232,7 @@ export default function DoorLockStatus() {
           </div>
         </div>
         
-        <div className="col-md-4">
+        <div className="col-md-3">
           <div className="card text-center shadow-sm">
             <div className="card-body">
               <h5 className="card-title">Reader Status</h5>
@@ -235,7 +244,7 @@ export default function DoorLockStatus() {
           </div>
         </div>
         
-        <div className="col-md-4">
+        <div className="col-md-3">
           <div className="card text-center shadow-sm">
             <div className="card-body">
               <h5 className="card-title">Pinpad Status</h5>
@@ -246,11 +255,23 @@ export default function DoorLockStatus() {
             </div>
           </div>
         </div>
+
+        <div className="col-md-3">
+          <div className="card text-center shadow-sm">
+            <div className="card-body">
+              <h5 className="card-title">Buzzer Status</h5>
+              <div className={`display-6 mb-2 text-${buzzerState ? 'danger' : 'secondary'}`}>
+                {buzzerState ? '🔊 ON' : '🔇 OFF'}
+              </div>
+              <p className="text-muted">Buzzer state</p>
+            </div>
+          </div>
+        </div>
       </div>
 
       {/* Control Buttons */}
       <div className="row mt-4">
-        <div className="col-md-6">
+        <div className="col-md-4">
           <div className="card shadow-sm">
             <div className="card-header bg-white">
               <h5 className="mb-0">🔓 Door Control (D01)</h5>
@@ -259,7 +280,7 @@ export default function DoorLockStatus() {
               <button
                 className="btn btn-success btn-lg w-100"
                 onClick={handleOpenDoor}
-                disabled={loading}
+                disabled={loading || doorStatus.door === 'open'}
               >
                 {loading ? (
                   <>
@@ -267,17 +288,17 @@ export default function DoorLockStatus() {
                     Opening...
                   </>
                 ) : (
-                  '🚪 OPEN DOOR D01'
+                  doorStatus.door === 'open' ? '🚪 DOOR OPEN' : '🚪 OPEN DOOR D01'
                 )}
               </button>
               <small className="text-muted mt-2 d-block">
-                Topic: {MQTT_TOPICS.DOOR_CONTROL}
+                Using REST API • Auto-closes in 5 seconds
               </small>
             </div>
           </div>
         </div>
 
-        <div className="col-md-6">
+        <div className="col-md-4">
           <div className="card shadow-sm">
             <div className="card-header bg-white">
               <h5 className="mb-0">🚨 Buzzer Control (B01)</h5>
@@ -298,7 +319,27 @@ export default function DoorLockStatus() {
                 )}
               </button>
               <small className="text-muted mt-2 d-block">
-                Topic: {MQTT_TOPICS.BUZZER_CONTROL} | Status: {buzzerState ? 'ON' : 'OFF'}
+                Using REST API • Status: {buzzerState ? 'ON' : 'OFF'}
+              </small>
+            </div>
+          </div>
+        </div>
+
+        <div className="col-md-4">
+          <div className="card shadow-sm">
+            <div className="card-header bg-white">
+              <h5 className="mb-0">🔧 Device Simulation</h5>
+            </div>
+            <div className="card-body text-center">
+              <button
+                className="btn btn-info btn-lg w-100"
+                onClick={simulateDeviceEvents}
+                disabled={loading}
+              >
+                🔧 SIMULATE DEVICES
+              </button>
+              <small className="text-muted mt-2 d-block">
+                Simulate reader & pinpad connection
               </small>
             </div>
           </div>
@@ -310,14 +351,17 @@ export default function DoorLockStatus() {
         <div className="col-12">
           <div className="card">
             <div className="card-header d-flex justify-content-between align-items-center">
-              <h6 className="mb-0">📨 MQTT Message Log</h6>
-              <button className="btn btn-sm btn-outline-secondary" onClick={clearMessages}>
-                Clear
-              </button>
+              <h6 className="mb-0">📨 REST API Message Log</h6>
+              <div>
+                <span className="badge bg-info me-2">Polling: Active</span>
+                <button className="btn btn-sm btn-outline-secondary" onClick={clearMessages}>
+                  Clear
+                </button>
+              </div>
             </div>
             <div className="card-body" style={{ maxHeight: '300px', overflowY: 'auto' }}>
               {messages.length === 0 ? (
-                <p className="text-muted mb-0">No messages received yet...</p>
+                <p className="text-muted mb-0">No messages yet. Polling will start automatically...</p>
               ) : (
                 messages.map((msg, index) => (
                   <div key={index} className="border-bottom pb-2 mb-2">
@@ -326,11 +370,10 @@ export default function DoorLockStatus() {
                         <small className="text-muted">[{formatTime(msg.timestamp)}]</small>
                         <br />
                         <code>
-                          {msg.type === 'reader' && '📋 '}
-                          {msg.type === 'door' && '🚪 '}
-                          {msg.type === 'pinpad' && '⌨️ '}
-                          {msg.type === 'buzzer' && '🔊 '}
+                          {msg.type === 'polling' && '🔄 '}
                           {msg.type === 'sent' && '📤 '}
+                          {msg.type === 'simulation' && '🔧 '}
+                          {msg.type === 'auto' && '⏰ '}
                           {msg.message}
                         </code>
                       </div>
@@ -348,28 +391,29 @@ export default function DoorLockStatus() {
         <div className="col-12">
           <div className="card">
             <div className="card-header">
-              <h6 className="mb-0">🔧 Debug Information</h6>
+              <h6 className="mb-0">🔧 System Information</h6>
             </div>
             <div className="card-body">
               <div className="row">
                 <div className="col-md-6">
-                  <h6>Subscribed Topics:</h6>
+                  <h6>REST API Endpoints:</h6>
                   <ul className="small">
-                    <li><code>{MQTT_TOPICS.READER_STATUS}</code></li>
-                    <li><code>{MQTT_TOPICS.DOOR_STATUS}</code></li>
-                    <li><code>{MQTT_TOPICS.PINPAD_STATUS}</code></li>
-                    <li><code>{MQTT_TOPICS.BUZZER_STATUS}</code></li>
-                    <li><code>doorlock/status/#</code></li>
+                    <li><code>POST /api/device/status/door</code> - Update door status</li>
+                    <li><code>POST /api/device/status/reader</code> - Update reader status</li>
+                    <li><code>POST /api/device/status/pinpad</code> - Update pinpad status</li>
+                    <li><code>POST /api/device/status/buzzer</code> - Update buzzer status</li>
+                    <li><code>GET /api/device/status</code> - Get all status</li>
                   </ul>
                 </div>
                 <div className="col-md-6">
                   <h6>Current State:</h6>
                   <pre className="small">
 {JSON.stringify({
-  connectionStatus,
+  connectionStatus: "REST API",
   doorStatus,
   buzzerState,
-  loading
+  loading,
+  polling: "Active (3s interval)"
 }, null, 2)}
                   </pre>
                 </div>

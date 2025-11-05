@@ -12,6 +12,7 @@ import 'bootstrap/dist/css/bootstrap.min.css';
 import 'bootstrap/dist/js/bootstrap.bundle.min.js'; 
 import InternalMQTTTest from "./pages/MQTTTesting";
 import DoorLockStatus from "./pages/DoorlockStatus";
+import DeviceSimulation from "./pages/DeviceSimulation";
 
 
 export default function App() {
@@ -61,6 +62,11 @@ export default function App() {
                     Test MQTT
                   </Link>
                 </li>
+                <li className="nav-item">
+                  <Link className="nav-link" to="/restapi-test">
+                    Test RestAPI
+                  </Link>
+                </li>
               </ul>
               <button onClick={doLogout} className="btn btn-outline-light">
                 Logout
@@ -95,6 +101,13 @@ export default function App() {
             <InternalMQTTTest />
           </ProtectedRoute>
         } />
+
+        <Route path="/restapi-test" element={
+          <ProtectedRoute>
+            <DeviceSimulation />
+          </ProtectedRoute>
+        } />
+
 
         {/* Catch-all */}
         <Route path="*" element={<h2 className="p-4">Page not found</h2>} />

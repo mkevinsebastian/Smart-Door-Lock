@@ -612,3 +612,96 @@ if (typeof window !== 'undefined') {
     service: mqttService
   };
 }
+
+export const updateDoorStatus = async (doorId, status) => {
+  try {
+    const response = await apiPost('/device/status/door', {
+      door_id: doorId,
+      status: status,
+      timestamp: new Date().toISOString()
+    });
+    return response;
+  } catch (error) {
+    console.error('Failed to update door status:', error);
+    throw error;
+  }
+};
+
+export const updateReaderStatus = async (readerId, status) => {
+  try {
+    const response = await apiPost('/device/status/reader', {
+      reader_id: readerId,
+      status: status,
+      timestamp: new Date().toISOString()
+    });
+    return response;
+  } catch (error) {
+    console.error('Failed to update reader status:', error);
+    throw error;
+  }
+};
+
+export const updatePinpadStatus = async (pinpadId, status) => {
+  try {
+    const response = await apiPost('/device/status/pinpad', {
+      pinpad_id: pinpadId,
+      status: status,
+      timestamp: new Date().toISOString()
+    });
+    return response;
+  } catch (error) {
+    console.error('Failed to update pinpad status:', error);
+    throw error;
+  }
+};
+
+export const updateBuzzerStatus = async (buzzerId, status) => {
+  try {
+    const response = await apiPost('/device/status/buzzer', {
+      buzzer_id: buzzerId,
+      status: status,
+      timestamp: new Date().toISOString()
+    });
+    return response;
+  } catch (error) {
+    console.error('Failed to update buzzer status:', error);
+    throw error;
+  }
+};
+
+// Fungsi untuk mendapatkan status terbaru via REST
+export const getDeviceStatus = async () => {
+  try {
+    const response = await apiGet('/device/status');
+    return response;
+  } catch (error) {
+    console.error('Failed to get device status:', error);
+    return {
+      door: 'closed',
+      reader: 'disconnected',
+      pinpad: 'disconnected',
+      buzzer: false
+    };
+  }
+};
+
+// Fungsi untuk simulasi event real-time via REST
+export const simulateAttendanceEvent = async (data) => {
+  try {
+    const response = await apiPost('/device/events/attendance', data);
+    return response;
+  } catch (error) {
+    console.error('Failed to simulate attendance event:', error);
+    throw error;
+  }
+};
+
+export const simulateAlarmEvent = async (data) => {
+  try {
+    const response = await apiPost('/device/events/alarm', data);
+    return response;
+  } catch (error) {
+    console.error('Failed to simulate alarm event:', error);
+    throw error;
+  }
+};
