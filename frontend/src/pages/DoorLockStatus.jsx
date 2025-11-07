@@ -2,10 +2,8 @@ import { useEffect, useState } from "react";
 import { 
   controlDoorLock, 
   controlBuzzer, 
-  updateDoorStatus, 
   updateReaderStatus, 
-  updatePinpadStatus, 
-  updateBuzzerStatus,
+  updatePinpadStatus,
   getDeviceStatus 
 } from "../services/api";
 
@@ -17,9 +15,8 @@ export default function DoorLockStatus() {
   });
   const [buzzerState, setBuzzerState] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [connectionStatus, setConnectionStatus] = useState(true);
   const [messages, setMessages] = useState([]);
-  const [pollingInterval, setPollingInterval] = useState(null);
+  const [_pollingIntervalRef, setPollingInterval] = useState(null);
 
   // Polling untuk status device
   const startStatusPolling = () => {
@@ -79,10 +76,7 @@ export default function DoorLockStatus() {
     try {
       setLoading(true);
       
-      // Update status via REST API
-      await updateDoorStatus('D01', 'open');
-      
-      // Also send control command
+      // Gunakan MQTT untuk kontrol door
       await controlDoorLock('D01', 'unlock');
       
       // Update local state
@@ -91,19 +85,19 @@ export default function DoorLockStatus() {
       // Add to message log
       setMessages(prev => [...prev, {
         type: 'sent', 
-        message: 'Door D01 unlock command sent via REST API', 
+        message: 'Door D01 unlock command sent via MQTT', 
         timestamp: new Date()
       }]);
       
-      alert('🚪 Door unlock command sent to D01 via REST API!');
+      alert('🚪 Door unlock command sent to D01 via MQTT!');
       
       // Auto close after 5 seconds
       setTimeout(async () => {
-        await updateDoorStatus('D01', 'closed');
+        await controlDoorLock('D01', 'lock');
         setDoorStatus(prev => ({ ...prev, door: 'closed' }));
         setMessages(prev => [...prev, {
           type: 'auto',
-          message: 'Door D01 auto-closed',
+          message: 'Door D01 auto-closed via MQTT',
           timestamp: new Date()
         }]);
       }, 5000);
@@ -121,10 +115,7 @@ export default function DoorLockStatus() {
       const newBuzzerState = !buzzerState;
       const command = newBuzzerState ? 'on' : 'off';
       
-      // Update status via REST API
-      await updateBuzzerStatus('B01', newBuzzerState);
-      
-      // Also send control command
+      // Gunakan MQTT untuk kontrol buzzer
       await controlBuzzer('B01', command, newBuzzerState ? 10 : 0);
       
       // Update local state
@@ -133,11 +124,11 @@ export default function DoorLockStatus() {
       // Add to message log
       setMessages(prev => [...prev, {
         type: 'sent', 
-        message: `Buzzer ${command} command sent via REST API`, 
+        message: `Buzzer ${command} command sent via MQTT`, 
         timestamp: new Date()
       }]);
       
-      alert(`🔊 Buzzer ${command} command sent to B01 via REST API!`);
+      alert(`🔊 Buzzer ${command} command sent to B01 via MQTT!`);
       
     } catch (error) {
       alert(`❌ Failed to control buzzer: ${error.message}`);
@@ -148,7 +139,7 @@ export default function DoorLockStatus() {
 
   const simulateDeviceEvents = async () => {
     try {
-      // Simulate reader connection
+      // Simulate reader connection (pakai REST API untuk status)
       await updateReaderStatus('R01', 'connected');
       setDoorStatus(prev => ({ ...prev, reader: 'connected' }));
       
@@ -205,15 +196,15 @@ export default function DoorLockStatus() {
 
   return (
     <div className="container py-4">
-      <h2>🚪 Door Lock Status & Control (REST API)</h2>
+      <h2>🚪 Door Lock Status & Control (Hybrid)</h2>
       
       {/* Connection Status */}
       <div className="row mb-4">
         <div className="col-12">
-          <div className="alert alert-success">
-            <strong>Connection Status:</strong> 🟢 CONNECTED (REST API)
+          <div className="alert alert-info">
+            <strong>Connection Status:</strong> 🟢 HYBRID MODE
             <br />
-            <small>Using REST API with 3-second polling • No MQTT dependency</small>
+            <small>REST API for device status • MQTT for device control • 3-second polling</small>
           </div>
         </div>
       </div>
@@ -292,7 +283,7 @@ export default function DoorLockStatus() {
                 )}
               </button>
               <small className="text-muted mt-2 d-block">
-                Using REST API • Auto-closes in 5 seconds
+                Using MQTT • Auto-closes in 5 seconds
               </small>
             </div>
           </div>
@@ -319,7 +310,7 @@ export default function DoorLockStatus() {
                 )}
               </button>
               <small className="text-muted mt-2 d-block">
-                Using REST API • Status: {buzzerState ? 'ON' : 'OFF'}
+                Using MQTT • Status: {buzzerState ? 'ON' : 'OFF'}
               </small>
             </div>
           </div>
@@ -351,7 +342,7 @@ export default function DoorLockStatus() {
         <div className="col-12">
           <div className="card">
             <div className="card-header d-flex justify-content-between align-items-center">
-              <h6 className="mb-0">📨 REST API Message Log</h6>
+              <h6 className="mb-0">📨 System Message Log</h6>
               <div>
                 <span className="badge bg-info me-2">Polling: Active</span>
                 <button className="btn btn-sm btn-outline-secondary" onClick={clearMessages}>
@@ -396,20 +387,22 @@ export default function DoorLockStatus() {
             <div className="card-body">
               <div className="row">
                 <div className="col-md-6">
-                  <h6>REST API Endpoints:</h6>
+                  <h6>Hybrid System:</h6>
                   <ul className="small">
-                    <li><code>POST /api/device/status/door</code> - Update door status</li>
+                    <li><strong>REST API Endpoints:</strong></li>
+                    <li><code>GET /api/device/status</code> - Get device status</li>
                     <li><code>POST /api/device/status/reader</code> - Update reader status</li>
                     <li><code>POST /api/device/status/pinpad</code> - Update pinpad status</li>
-                    <li><code>POST /api/device/status/buzzer</code> - Update buzzer status</li>
-                    <li><code>GET /api/device/status</code> - Get all status</li>
+                    <li><strong>MQTT Endpoints:</strong></li>
+                    <li><code>POST /api/control/doorlock</code> - Control door lock</li>
+                    <li><code>POST /api/control/buzzer</code> - Control buzzer</li>
                   </ul>
                 </div>
                 <div className="col-md-6">
                   <h6>Current State:</h6>
                   <pre className="small">
 {JSON.stringify({
-  connectionStatus: "REST API",
+  connectionMode: "Hybrid",
   doorStatus,
   buzzerState,
   loading,

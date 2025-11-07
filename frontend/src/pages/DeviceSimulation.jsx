@@ -3,10 +3,8 @@ import {
   getDeviceStatus,
   simulateAttendanceEvent,
   simulateAlarmEvent,
-  updateDoorStatus,
   updateReaderStatus,
   updatePinpadStatus,
-  updateBuzzerStatus,
   controlDoorLock,
   controlBuzzer
 } from "../services/api";
@@ -36,15 +34,10 @@ const DeviceSimulation = () => {
         const status = await getDeviceStatus();
         setDeviceStatus(status);
         
-        // Add to activity log
-        setActivityLog(prev => [{
-          type: 'status_poll',
-          message: `Device status updated`,
-          timestamp: new Date(),
-          data: status
-        }, ...prev.slice(0, 19)]); // Keep last 20 activities
+        addToActivityLog('status_poll', `Device status updated`, status);
       } catch (error) {
         console.error('Failed to load device status:', error);
+        addToActivityLog('error', `Failed to load device status: ${error.message}`);
       }
     };
 
@@ -73,7 +66,7 @@ const DeviceSimulation = () => {
         arrow: direction
       };
       
-      const result = await simulateAttendanceEvent(testData);
+      await simulateAttendanceEvent(testData);
       
       setSimulationResult({
         success: true,
@@ -102,7 +95,7 @@ const DeviceSimulation = () => {
         reason: simulationConfig.alarm_reason
       };
       
-      const result = await simulateAlarmEvent(testData);
+      await simulateAlarmEvent(testData);
       
       setSimulationResult({
         success: true,
@@ -127,10 +120,6 @@ const DeviceSimulation = () => {
     try {
       let result;
       switch (deviceType) {
-        case 'door':
-          result = await updateDoorStatus(simulationConfig.door_id, status);
-          setDeviceStatus(prev => ({ ...prev, door: status }));
-          break;
         case 'reader':
           result = await updateReaderStatus('R01', status);
           setDeviceStatus(prev => ({ ...prev, reader: status }));
@@ -138,11 +127,6 @@ const DeviceSimulation = () => {
         case 'pinpad':
           result = await updatePinpadStatus('P01', status);
           setDeviceStatus(prev => ({ ...prev, pinpad: status }));
-          break;
-        case 'buzzer':
-          const buzzerState = status === 'on';
-          result = await updateBuzzerStatus(simulationConfig.buzzer_id, buzzerState);
-          setDeviceStatus(prev => ({ ...prev, buzzer: buzzerState }));
           break;
         default:
           throw new Error('Unknown device type');
@@ -166,6 +150,7 @@ const DeviceSimulation = () => {
     }
   };
 
+  // Fungsi untuk kontrol device - MENGGUNAKAN MQTT
   const controlDevice = async (deviceType, command) => {
     setIsSimulating(true);
     try {
@@ -173,13 +158,23 @@ const DeviceSimulation = () => {
       switch (deviceType) {
         case 'door':
           result = await controlDoorLock(simulationConfig.door_id, command);
-          // Auto update status
-          setTimeout(() => simulateDeviceStatus('door', command === 'unlock' ? 'open' : 'closed'), 1000);
+          // Update status setelah kontrol MQTT
+          setTimeout(() => {
+            setDeviceStatus(prev => ({ 
+              ...prev, 
+              door: command === 'unlock' ? 'open' : 'closed' 
+            }));
+          }, 1000);
           break;
         case 'buzzer':
           result = await controlBuzzer(simulationConfig.buzzer_id, command, 10);
-          // Auto update status
-          setTimeout(() => simulateDeviceStatus('buzzer', command === 'on' ? 'on' : 'off'), 1000);
+          // Update status setelah kontrol MQTT
+          setTimeout(() => {
+            setDeviceStatus(prev => ({ 
+              ...prev, 
+              buzzer: command === 'on' 
+            }));
+          }, 1000);
           break;
         default:
           throw new Error('Unknown device type');
@@ -187,17 +182,21 @@ const DeviceSimulation = () => {
       
       setSimulationResult({
         success: true,
-        message: `✅ ${deviceType.toUpperCase()} control command sent: ${command}`
+        message: `✅ ${deviceType.toUpperCase()} control command sent via MQTT: ${command}`
       });
       
-      addToActivityLog('device_control', `${deviceType} command: ${command}`, { deviceType, command });
+      addToActivityLog('device_control', `${deviceType} MQTT command: ${command}`, { 
+        deviceType, 
+        command, 
+        method: 'MQTT' 
+      });
       
     } catch (error) {
       setSimulationResult({
         success: false,
-        message: `❌ Failed to control ${deviceType}: ${error.message}`
+        message: `❌ Failed to control ${deviceType} via MQTT: ${error.message}`
       });
-      addToActivityLog('error', `Device control failed: ${error.message}`);
+      addToActivityLog('error', `MQTT device control failed: ${error.message}`);
     } finally {
       setIsSimulating(false);
     }
@@ -208,35 +207,35 @@ const DeviceSimulation = () => {
     try {
       addToActivityLog('scenario', 'Starting complete simulation scenario');
       
-      // Step 1: Connect devices
+      // Step 1: Connect devices (REST API)
       await simulateDeviceStatus('reader', 'connected');
       await new Promise(resolve => setTimeout(resolve, 1000));
       
       await simulateDeviceStatus('pinpad', 'connected');
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // Step 2: Simulate attendance IN
+      // Step 2: Simulate attendance IN (REST API)
       await simulateAttendance('in');
       await new Promise(resolve => setTimeout(resolve, 1500));
       
-      // Step 3: Open door
+      // Step 3: Open door (MQTT)
       await controlDevice('door', 'unlock');
       await new Promise(resolve => setTimeout(resolve, 2000));
       
-      // Step 4: Simulate attendance OUT
+      // Step 4: Simulate attendance OUT (REST API)
       await simulateAttendance('out');
       await new Promise(resolve => setTimeout(resolve, 1500));
       
-      // Step 5: Trigger alarm
+      // Step 5: Trigger alarm (REST API)
       await simulateAlarm();
       await new Promise(resolve => setTimeout(resolve, 1000));
       
-      // Step 6: Activate buzzer
+      // Step 6: Activate buzzer (MQTT)
       await controlDevice('buzzer', 'on');
       
       setSimulationResult({
         success: true,
-        message: '✅ Complete simulation scenario executed successfully!'
+        message: '✅ Complete simulation scenario executed successfully! (Mixed REST API + MQTT)'
       });
       
       addToActivityLog('scenario', 'Complete simulation scenario finished');
@@ -296,17 +295,17 @@ const DeviceSimulation = () => {
       <div className="row">
         <div className="col-12">
           <h2>🎮 Device Simulation & Testing</h2>
-          <p className="text-muted">Test and simulate all device operations via REST API</p>
+          <p className="text-muted">Hybrid testing with REST API for status and MQTT for device control</p>
         </div>
       </div>
 
       {/* Connection Status */}
       <div className="row mb-4">
         <div className="col-12">
-          <div className="alert alert-success">
-            <strong>🔗 Connection Status:</strong> REST API Connected
+          <div className="alert alert-info">
+            <strong>🔗 Connection Status:</strong> Hybrid Mode Active
             <br />
-            <small>Real-time device status polling active (5-second intervals)</small>
+            <small>REST API for device status • MQTT for device control • Real-time polling active (5-second intervals)</small>
           </div>
         </div>
       </div>
@@ -316,7 +315,7 @@ const DeviceSimulation = () => {
         <div className="col-12">
           <div className="card">
             <div className="card-header">
-              <h5 className="mb-0">📊 Current Device Status</h5>
+              <h5 className="mb-0">📊 Current Device Status (REST API)</h5>
             </div>
             <div className="card-body">
               <div className="row text-center">
@@ -394,7 +393,7 @@ const DeviceSimulation = () => {
           {/* Attendance Simulation */}
           <div className="card mb-4">
             <div className="card-header">
-              <h6 className="mb-0">📊 Attendance Simulation</h6>
+              <h6 className="mb-0">📊 Attendance Simulation (REST API)</h6>
             </div>
             <div className="card-body">
               <div className="d-grid gap-2">
@@ -419,7 +418,7 @@ const DeviceSimulation = () => {
           {/* Alarm Simulation */}
           <div className="card mb-4">
             <div className="card-header">
-              <h6 className="mb-0">🚨 Alarm Simulation</h6>
+              <h6 className="mb-0">🚨 Alarm Simulation (REST API)</h6>
             </div>
             <div className="card-body">
               <div className="d-grid gap-2">
@@ -440,7 +439,7 @@ const DeviceSimulation = () => {
           {/* Device Status Control */}
           <div className="card mb-4">
             <div className="card-header">
-              <h6 className="mb-0">🔧 Device Status Control</h6>
+              <h6 className="mb-0">🔧 Device Status Control (REST API)</h6>
             </div>
             <div className="card-body">
               <div className="row g-2">
@@ -484,10 +483,10 @@ const DeviceSimulation = () => {
             </div>
           </div>
 
-          {/* Device Control */}
+          {/* Device Control - MQTT */}
           <div className="card mb-4">
             <div className="card-header">
-              <h6 className="mb-0">🎛️ Device Control</h6>
+              <h6 className="mb-0">🎛️ Device Control (MQTT)</h6>
             </div>
             <div className="card-body">
               <div className="row g-2">
@@ -528,13 +527,18 @@ const DeviceSimulation = () => {
                   </button>
                 </div>
               </div>
+              <div className="mt-2">
+                <small className="text-muted">
+                  <strong>Using MQTT:</strong> doorlock/D01/control • buzzer/B01/control
+                </small>
+              </div>
             </div>
           </div>
 
           {/* Complete Scenario */}
           <div className="card mb-4">
             <div className="card-header">
-              <h6 className="mb-0">🎭 Complete Scenario</h6>
+              <h6 className="mb-0">🎭 Complete Scenario (Hybrid)</h6>
             </div>
             <div className="card-body">
               <div className="d-grid gap-2">
@@ -546,7 +550,7 @@ const DeviceSimulation = () => {
                   {isSimulating ? '⏳ Running Scenario...' : '🎬 Run Complete Scenario'}
                 </button>
                 <small className="text-muted text-center">
-                  Connects devices → Check IN → Open door → Check OUT → Trigger alarm → Activate buzzer
+                  REST API: Connect devices, Attendance, Alarm • MQTT: Door control, Buzzer
                 </small>
               </div>
             </div>
@@ -590,6 +594,7 @@ const DeviceSimulation = () => {
                           {log.type === 'scenario' && '🎭 '}
                           {log.type === 'error' && '❌ '}
                           {log.message}
+                          {log.method && ` [${log.method}]`}
                         </span>
                       </div>
                     </div>
@@ -606,27 +611,28 @@ const DeviceSimulation = () => {
         <div className="col-12">
           <div className="card">
             <div className="card-header">
-              <h6 className="mb-0">🔗 REST API Endpoints</h6>
+              <h6 className="mb-0">🔗 System Information</h6>
             </div>
             <div className="card-body">
               <div className="row">
                 <div className="col-md-6">
-                  <h6>Status Endpoints:</h6>
+                  <h6>REST API Endpoints (Status & Simulation):</h6>
                   <ul className="small">
-                    <li><code>GET /api/device/status</code> - Get all device status</li>
-                    <li><code>POST /api/device/status/door</code> - Update door status</li>
+                    <li><code>GET /api/device/status</code> - Get device status</li>
                     <li><code>POST /api/device/status/reader</code> - Update reader status</li>
                     <li><code>POST /api/device/status/pinpad</code> - Update pinpad status</li>
-                    <li><code>POST /api/device/status/buzzer</code> - Update buzzer status</li>
+                    <li><code>POST /api/device/events/attendance</code> - Simulate attendance</li>
+                    <li><code>POST /api/device/events/alarm</code> - Simulate alarm</li>
                   </ul>
                 </div>
                 <div className="col-md-6">
-                  <h6>Event Endpoints:</h6>
+                  <h6>MQTT Endpoints (Device Control):</h6>
                   <ul className="small">
-                    <li><code>POST /api/device/events/attendance</code> - Simulate attendance</li>
-                    <li><code>POST /api/device/events/alarm</code> - Simulate alarm</li>
                     <li><code>POST /api/control/doorlock</code> - Control door lock</li>
                     <li><code>POST /api/control/buzzer</code> - Control buzzer</li>
+                    <li><strong>MQTT Topics:</strong></li>
+                    <li><code>doorlock/D01/control</code> - Door control</li>
+                    <li><code>buzzer/B01/control</code> - Buzzer control</li>
                   </ul>
                 </div>
               </div>

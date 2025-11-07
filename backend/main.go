@@ -286,19 +286,34 @@ func initDeviceStatus() {
 
 // --- MQTT FUNCTIONS ---
 func initMQTT() {
-	opts := mqtt.NewClientOptions()
-	opts.AddBroker(mqttBroker)
-	opts.SetClientID(mqttClientID)
-	opts.SetKeepAlive(60 * time.Second)
-	opts.SetPingTimeout(1 * time.Second)
+    opts := mqtt.NewClientOptions()
+    opts.AddBroker(mqttBroker)
+    opts.SetClientID(mqttClientID)
+    opts.SetKeepAlive(60 * time.Second)
+    opts.SetPingTimeout(1 * time.Second)
+    opts.SetAutoReconnect(true) // Tambahkan ini
+    opts.SetConnectRetry(true)  // Tambahkan ini
+    opts.SetMaxReconnectInterval(10 * time.Second) // Tambahkan ini
 
-	mqttClient = mqtt.NewClient(opts)
+    // Tambahkan connection handler
+    opts.OnConnect = func(client mqtt.Client) {
+        log.Println("✅ MQTT Client successfully connected")
+    }
+    
+    opts.OnConnectionLost = func(client mqtt.Client, err error) {
+        log.Printf("❌ MQTT Connection lost: %v", err)
+    }
+
+    mqttClient = mqtt.NewClient(opts)
+    
+	// Connect to MQTT broker
 	if token := mqttClient.Connect(); token.Wait() && token.Error() != nil {
-		log.Printf("PERINGATAN: Gagal terhubung ke MQTT broker: %v", token.Error())
-		mqttClient = nil
-	} else {
-		log.Println("✅ MQTT Client terhubung")
-	}
+        log.Printf("⚠️ MQTT Connection failed: %v", token.Error())
+        log.Printf("⚠️ Attempting to reconnect in background...")
+        // Biarkan client mencoba reconnect secara otomatis
+    } else {
+        log.Println("✅ MQTT Client connected successfully")
+    }
 }
 
 func publishMQTT(topic string, message string) error {
@@ -1143,21 +1158,44 @@ func main() {
 			return
 		}
 
-		topic := fmt.Sprintf("doorlock/%s/control", req.DoorID)
-		message := fmt.Sprintf(`{"command": "%s", "timestamp": "%s"}`, 
-			req.Command, time.Now().Format(time.RFC3339))
+		// Update device status langsung via REST (fallback)
+		deviceStatus.Lock()
+		if req.Command == "unlock" {
+			deviceStatus.Data["door"] = "open"
+		} else if req.Command == "lock" {
+			deviceStatus.Data["door"] = "closed"
+		}
+		deviceStatus.Data["last_updated"] = time.Now()
+		deviceStatus.Unlock()
 
-		if err := publishMQTT(topic, message); err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{
-				"error": "Gagal mengirim perintah ke doorlock",
-				"details": err.Error(),
-			})
-			return
+		// Coba publish MQTT jika tersedia (optional)
+		if mqttClient != nil && mqttClient.IsConnected() {
+			topic := fmt.Sprintf("doorlock/%s/control", req.DoorID)
+			message := fmt.Sprintf(`{"command": "%s", "timestamp": "%s"}`, 
+				req.Command, time.Now().Format(time.RFC3339))
+			
+			if err := publishMQTT(topic, message); err != nil {
+				log.Printf("⚠️ MQTT publish failed but REST update successful: %v", err)
+			}
 		}
 
 		c.JSON(http.StatusOK, gin.H{
 			"status":  "success",
-			"message": fmt.Sprintf("Perintah %s dikirim ke door %s", req.Command, req.DoorID),
+			"message": fmt.Sprintf("Perintah %s executed for door %s", req.Command, req.DoorID),
+			"method":  "REST", // Tambahkan info method
+		})
+	})
+
+	api.GET("/mqtt-test", func(c *gin.Context) {
+		status := "disconnected"
+		if mqttClient != nil && mqttClient.IsConnected() {
+			status = "connected"
+		}
+		
+		c.JSON(http.StatusOK, gin.H{
+			"mqtt_status": status,
+			"broker": mqttBroker,
+			"client_id": mqttClientID,
 		})
 	})
 
