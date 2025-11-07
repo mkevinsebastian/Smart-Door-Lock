@@ -24,3 +24,12 @@ To fix this, use `chmod 0700 /mosquitto/config/acl.conf`.
 1762488489: Saving in-memory database to /mosquitto/data//mosquitto.db.
 1762488662: mosquitto version 2.0.22 terminating
 1762488662: Saving in-memory database to /mosquitto/data//mosquitto.db.
+1762488667: mosquitto version 2.0.22 starting
+1762488667: Config loaded from /mosquitto/config/mosquitto.conf.
+1762488667: Warning: File /mosquitto/config/acl.conf has world readable permissions. Future versions will refuse to load this file.
+To fix this, use `chmod 0700 /mosquitto/config/acl.conf`.
+1762488667: Opening ipv4 listen socket on port 1883.
+1762488667: Opening websockets listen socket on port 9001.
+1762488667: mosquitto version 2.0.22 running
+1762489232: New connection from 172.22.0.1:40546 on port 1883.
+1762489232: New client connected from 172.22.0.1:40546 as doorlock_backend (p2, c1, k60).
