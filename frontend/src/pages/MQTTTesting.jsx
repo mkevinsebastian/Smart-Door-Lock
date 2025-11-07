@@ -21,7 +21,7 @@ const InternalMQTTTest = () => {
     };
 
     // Check every 2 seconds
-    const interval = setInterval(checkConnection, 2000);
+    const interval = setInterval(checkConnection, 1000);
     checkConnection(); // Initial check
 
     return () => clearInterval(interval);

@@ -19,30 +19,22 @@ export default function DoorLockStatus() {
   const [_pollingIntervalRef, setPollingInterval] = useState(null);
 
   // Polling untuk status device
-  const startStatusPolling = () => {
-    const interval = setInterval(async () => {
-      try {
-        const status = await getDeviceStatus();
-        setDoorStatus(prev => ({
-          ...prev,
-          door: status.door || prev.door,
-          reader: status.reader || prev.reader,
-          pinpad: status.pinpad || prev.pinpad
-        }));
-        if (status.buzzer !== undefined) {
-          setBuzzerState(status.buzzer);
-        }
-        
-        // Add to message log
-        setMessages(prev => [...prev.slice(-19), {
-          type: 'polling',
-          message: `Status updated: door=${status.door}, reader=${status.reader}`,
-          timestamp: new Date()
-        }]);
-      } catch (error) {
-        console.error('Polling error:', error);
+  const interval = setInterval(async () => {
+    try {
+      const status = await getDeviceStatus();
+      setDoorStatus(prev => ({
+        ...prev,
+        door: status.door || prev.door,
+        reader: status.reader || prev.reader, 
+        pinpad: status.pinpad || prev.pinpad
+      }));
+      if (status.buzzer !== undefined) {
+        setBuzzerState(status.buzzer);
       }
-    }, 3000); // Poll every 3 seconds
+    } catch (error) {
+      console.error('Polling error:', error);
+    }
+  }, 800); // ← Ubah jadi 800ms (1 detik)
     
     setPollingInterval(interval);
     return interval;
@@ -159,7 +151,7 @@ export default function DoorLockStatus() {
           message: 'Pinpad P01 connected (simulated)',
           timestamp: new Date()
         }]);
-      }, 1000);
+      }, 800);
 
       alert('🔧 Device events simulated via REST API!');
 
